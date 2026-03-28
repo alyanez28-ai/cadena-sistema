@@ -613,8 +613,7 @@ function Socios({db}){
           <p style={{color:C.muted,fontSize:13,marginTop:3}}>{socios.length} socios registrados</p>
         </div>
         <div style={{display:"flex",gap:10}}>
-          <input value={buscar} onChange={e=>setBuscar(e.target.value)} placeholder="🔍 Buscar por nombre, cédula..."
-            style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 14px",color:C.white,fontSize:13,width:240}}/>
+          <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar por nombre, cédula, teléfono..."/>
           <button onClick={()=>setModal(true)} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>+ Nuevo Socio</button>
         </div>
       </div>
@@ -1010,6 +1009,8 @@ function Transacciones({db,sesion}){
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
         {/* FORMULARIO — altura fija con scroll */}
         <div style={{height:"calc(100vh - 200px)",overflowY:"auto",paddingRight:8,scrollbarWidth:"thin"}}>
+          {/* Buscador socio rápido */}
+          <Buscador valor={buscarSocio} onChange={v=>{setBuscarSocio(v);if(!v)f("socioId","");}} placeholder="🔍 Buscar socio por nombre o cédula..."/>
           {/* Selector tipo */}
           <div style={{marginBottom:16}}>
             <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Tipo de Transacción</div>
@@ -1264,6 +1265,7 @@ function Transacciones({db,sesion}){
 // CONCILIACIÓN
 // ══════════════════════════════════════════
 function Conciliacion({db}){
+  const [buscar,setBuscar]=useState("");
   const [cuentas,setCuentas]=useState([]);
   const [movimientos,setMovimientos]=useState([]);
   const [sel,setSel]=useState(null);
@@ -1746,6 +1748,7 @@ _Gracias por confiar en CADENA_ 🤝`;
 // REPORTES MENSUALES
 // ══════════════════════════════════════════
 function Reportes({db}){
+  const [buscar,setBuscar]=useState("");
   const [mes,setMes]=useState(new Date().getMonth()+1);
   const [anio,setAnio]=useState(new Date().getFullYear());
   const [socios,setSocios]=useState([]);
