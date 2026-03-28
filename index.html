@@ -74,6 +74,44 @@ const calcCuota = (cap,meses) => {
 // ══════════════════════════════════════════
 // COMPONENTES BASE
 // ══════════════════════════════════════════
+// ══════════════════════════════════════════
+// BUSCADOR ESTILIZADO REUTILIZABLE
+// ══════════════════════════════════════════
+function Buscador({valor,onChange,placeholder="🔍 Buscar por nombre, cédula, teléfono..."}){
+  return(
+    <div style={{position:"relative",marginBottom:16}}>
+      <input
+        value={valor}
+        onChange={e=>onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          width:"100%",
+          background:"#0d1a2e",
+          border:`2px solid ${valor?C.gold:C.border}`,
+          borderRadius:10,
+          padding:"11px 44px 11px 16px",
+          color:C.white,
+          fontSize:14,
+          outline:"none",
+          transition:"border 0.2s",
+          boxSizing:"border-box",
+          fontFamily:"'DM Mono',monospace",
+        }}
+      />
+      {valor&&(
+        <button onClick={()=>onChange("")} style={{
+          position:"absolute",right:12,top:"50%",transform:"translateY(-50%)",
+          background:"transparent",border:"none",color:C.muted,
+          fontSize:18,cursor:"pointer",lineHeight:1,padding:0
+        }}>✕</button>
+      )}
+      {!valor&&(
+        <span style={{position:"absolute",right:14,top:"50%",transform:"translateY(-50%)",fontSize:16,pointerEvents:"none"}}>🔍</span>
+      )}
+    </div>
+  );
+}
+
 function Badge({color,children}){
   const m={
     green:{bg:"#052e16",text:"#4ade80",border:"#14532d"},
@@ -647,6 +685,7 @@ function Cartera({db}){
   const [socios,setSocios]=useState([]);
   const [loading,setLoading]=useState(true);
   const [filtro,setFiltro]=useState("todos");
+  const [buscar,setBuscar]=useState("");
   const [selSocio,setSelSocio]=useState(null);
   const [planPagos,setPlanPagos]=useState([]);
   const [loadingPlan,setLoadingPlan]=useState(false);
@@ -666,7 +705,13 @@ function Cartera({db}){
   };
 
   const cartera=socios;
-  const filtrados=filtro==="todos"?cartera:filtro==="mora"?cartera.filter(s=>diasMora(s.fecha_vence)>0):cartera.filter(s=>diasMora(s.fecha_vence)===0);
+  const carteraFiltrada=filtro==="todos"?cartera:filtro==="mora"?cartera.filter(s=>diasMora(s.fecha_vence)>0):cartera.filter(s=>diasMora(s.fecha_vence)===0);
+  const filtrados=buscar?carteraFiltrada.filter(s=>
+    s.nombre.toLowerCase().includes(buscar.toLowerCase())||
+    s.cedula.includes(buscar)||
+    (s.telefono||"").includes(buscar)||
+    (s.codigo||"").includes(buscar)
+  ):carteraFiltrada;
   const totalC=cartera.reduce((a,s)=>a+s.saldo_credito,0);
   const totalM=cartera.filter(s=>diasMora(s.fecha_vence)>0).reduce((a,s)=>a+s.saldo_credito,0);
   const indM=totalC>0?((totalM/totalC)*100).toFixed(1):0;
@@ -685,6 +730,7 @@ function Cartera({db}){
         <StatCard label="Créditos Activos" value={cartera.length} color={C.gold}/>
       </div>
 
+      <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar por nombre, cédula, código..."/>
       <div style={{display:"flex",gap:8,marginBottom:14}}>
         {[["todos","Todos"],["activos","Al Día"],["mora","En Mora"]].map(([v,l])=>(
           <button key={v} onClick={()=>setFiltro(v)} style={{background:filtro===v?C.gold:C.card,color:filtro===v?"#000":C.muted,border:`1px solid ${filtro===v?C.gold:C.border}`,borderRadius:8,padding:"7px 16px",fontSize:12,fontWeight:700,cursor:"pointer"}}>{l}</button>
@@ -778,10 +824,58 @@ function Transacciones({db,sesion}){
   const [confirmacion,setConfirmacion]=useState(null);
   const [copiado,setCopiado]=useState(false);
   const [tipo,setTipo]=useState("deposito");
+  const [buscarSocio,setBuscarSocio]=useState("");
   const [verTabla,setVerTabla]=useState(false);
   const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12"});
 
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  // ── LECTOR DE COMPROBANTE CON IA ─────────────────────────
+  const [leyendoComp,setLeyendoComp]=useState(false);
+  const [compImagen,setCompImagen]=useState(null);
+  const [compResultado,setCompResultado]=useState(null);
+  const [compError,setCompError]=useState("");
+
+  const leerComprobante=async(archivo)=>{
+    if(!archivo) return;
+    setLeyendoComp(true);setCompError("");setCompResultado(null);
+    try{
+      const reader=new FileReader();
+      reader.onload=async(e)=>{
+        const base64=e.target.result.split(",")[1];
+        const mediaType=archivo.type||"image/jpeg";
+        setCompImagen(e.target.result);
+        try{
+          const resp=await fetch("https://api.anthropic.com/v1/messages",{
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({
+              model:"claude-sonnet-4-20250514",
+              max_tokens:1000,
+              messages:[{
+                role:"user",
+                content:[
+                  {type:"image",source:{type:"base64",media_type:mediaType,data:base64}},
+                  {type:"text",text:`Eres un asistente de una caja de ahorro ecuatoriana. Lee este comprobante de pago/deposito bancario y extrae la informacion. Responde SOLO en JSON valido con estos campos: {"monto":numero,"fecha":"YYYY-MM-DD","voucher":"numero referencia","tipo":"deposito o pago_cuota","banco":"nombre banco","nota":"descripcion breve"}. Si no puedes leer algun campo ponlo null. No incluyas texto fuera del JSON.`}
+                ]
+              }]
+            })
+          });
+          const data=await resp.json();
+          const texto=data.content[0].text;
+          const resultado=JSON.parse(texto.replace(/```json|```/g,"").trim());
+          setCompResultado(resultado);
+          if(resultado.monto) f("monto",String(resultado.monto));
+          if(resultado.fecha) f("fecha",resultado.fecha);
+          if(resultado.voucher) f("voucher",resultado.voucher);
+          if(resultado.tipo) setTipo(resultado.tipo);
+          if(resultado.nota) f("nota",resultado.nota);
+        }catch(err){setCompError("No se pudo leer el comprobante. Llena el formulario manualmente.");}
+        setLeyendoComp(false);
+      };
+      reader.readAsDataURL(archivo);
+    }catch(err){setCompError(err.message);setLeyendoComp(false);}
+  };
 
   const TIPOS=[
     {id:"deposito",   icon:"💰",label:"Depósito de Ahorro",   color:C.green,  desc:"El socio deposita en sus ahorros"},
@@ -913,9 +1007,9 @@ function Transacciones({db,sesion}){
       <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>Registro de Transacciones</h2>
       <p style={{color:C.muted,fontSize:13,marginBottom:20}}>{historial.length} transacciones en esta sesión</p>
 
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
-        {/* FORMULARIO */}
-        <div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
+        {/* FORMULARIO — altura fija con scroll */}
+        <div style={{height:"calc(100vh - 200px)",overflowY:"auto",paddingRight:8,scrollbarWidth:"thin"}}>
           {/* Selector tipo */}
           <div style={{marginBottom:16}}>
             <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Tipo de Transacción</div>
@@ -944,9 +1038,10 @@ function Transacciones({db,sesion}){
               {/* Socio */}
               <div>
                 <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>👤 Socio *</label>
+                <Buscador valor={buscarSocio} onChange={v=>{setBuscarSocio(v);if(!v)f("socioId","");}} placeholder="🔍 Filtrar socio..."/>
                 <select value={form.socioId} onChange={e=>f("socioId",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:form.socioId?C.white:C.muted,fontSize:13,cursor:"pointer"}}>
                   <option value="">— Seleccionar socio —</option>
-                  {socios.map(s=><option key={s.id} value={s.id}>{s.nombre} · {s.cedula}</option>)}
+                  {socios.filter(s=>!buscarSocio||s.nombre.toLowerCase().includes(buscarSocio.toLowerCase())||s.cedula.includes(buscarSocio)||(s.telefono||"").includes(buscarSocio)).map(s=><option key={s.id} value={s.id}>{s.nombre} · {s.cedula}</option>)}
                 </select>
               </div>
 
@@ -1138,7 +1233,7 @@ function Transacciones({db,sesion}){
 
           {/* Historial sesión */}
           <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Historial de esta sesión</div>
-          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden",maxHeight:confirmacion?320:560,overflowY:"auto"}}>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden",maxHeight:"calc(100vh - 400px)",overflowY:"auto"}}>
             {historial.length===0
               ?<div style={{padding:40,textAlign:"center"}}>
                 <div style={{fontSize:32,marginBottom:8}}>📋</div>
@@ -1292,6 +1387,7 @@ function Conciliacion({db}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
         <div>
           <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>Conciliación Bancaria</h2>
+      <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar movimiento, banco..."/>
           <p style={{color:C.muted,fontSize:13}}>4 cuentas bancarias · Cruce automático por cédula</p>
         </div>
         <div style={{display:"flex",gap:8}}>
@@ -1475,6 +1571,7 @@ function Conciliacion({db}){
 // ESTADOS DE CUENTA
 // ══════════════════════════════════════════
 function Estados({db}){
+  const [buscar,setBuscar]=useState("");
   const [socios,setSocios]=useState([]);
   const [sel,setSel]=useState(null);
   const [loading,setLoading]=useState(true);
@@ -1537,9 +1634,10 @@ _Gracias por confiar en CADENA_ 🤝`;
 
       <div style={{display:"grid",gridTemplateColumns:"240px 1fr",gap:18}}>
         {/* Lista */}
-        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,maxHeight:600,overflowY:"auto"}}>
+        <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:14,height:"calc(100vh - 180px)",overflowY:"auto",position:"sticky",top:0}}>
           <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:12}}>Socios ({socios.length})</div>
-          {socios.map(s=>{
+          <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar socio..."/>
+          {socios.filter(s=>!buscar||s.nombre.toLowerCase().includes(buscar.toLowerCase())||s.cedula.includes(buscar)||(s.telefono||"").includes(buscar)).map(s=>{
             const m=diasMora(s.fecha_vence);
             const env=log.some(l=>l.nombre===s.nombre&&l.fecha===hoy);
             return(
@@ -1746,6 +1844,7 @@ function Reportes({db}){
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
         <div>
           <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>Reportes Mensuales</h2>
+      <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar socio en reportes..."/>
           <p style={{color:C.muted,fontSize:13}}>Genera y exporta el informe financiero de la Caja</p>
         </div>
       </div>
