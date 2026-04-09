@@ -1137,42 +1137,78 @@ function Conciliacion({db}){
   };
 
   // ── Lector unificado: CSV + Excel ──────────────────────
+  // Normaliza fecha de Pichincha: "2026-3-31,\n9:46 PM" → "2026-03-31"
+  const normalizarFecha=(raw)=>{
+    if(!raw) return new Date().toISOString().split("T")[0];
+    const s=String(raw).replace(/\n/g," ").trim();
+    // Formato Pichincha: "2026-4-1, 1:17 AM" o "2026-3-31, 9:46 PM"
+    const m=s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+    // Intentar Date nativo
+    const d=new Date(s);
+    if(!isNaN(d)) return d.toISOString().split("T")[0];
+    return s.split(/[,\s]/)[0]||new Date().toISOString().split("T")[0];
+  };
+
   const leerArchivo=(file)=>{
+    const esExcel=file.name.match(/\.(xlsx|xls)$/i)||
+      file.type==="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"||
+      file.type==="application/vnd.ms-excel";
     const reader=new FileReader();
-    const esExcel=file.name.match(/\.(xlsx|xls)$/i);
     reader.onload=(e)=>{
       let hdrs,rows;
       if(esExcel){
         try{
-          const wb=XLSX.read(e.target.result,{type:"binary"});
+          const data=new Uint8Array(e.target.result);
+          const wb=XLSX.read(data,{type:"array"});
           const ws=wb.Sheets[wb.SheetNames[0]];
-          const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
-          if(!data||data.length<2){setImportMsg("❌ No se pudo leer el Excel. Verifica el archivo.");return;}
-          hdrs=data[0].map(h=>String(h).trim()).filter(h=>h!=="");
-          rows=data.slice(1).map(r=>{const obj={};hdrs.forEach((h,i)=>obj[h]=String(r[i]||"").trim());return obj;});
+          const arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+          if(!arr||arr.length<2){setImportMsg("❌ No se pudo leer el Excel.");return;}
+
+          // Buscar la fila de cabeceras reales (la que tenga "Fecha" o "fecha" en la primera celda)
+          // Pichincha tiene 5 filas de encabezado institucional antes de los datos
+          let headerRowIdx=0;
+          for(let i=0;i<arr.length;i++){
+            const first=String(arr[i][0]||"").trim().toLowerCase();
+            if(first==="fecha"||first==="date"){headerRowIdx=i;break;}
+          }
+
+          hdrs=arr[headerRowIdx].map(h=>String(h).trim()).filter(h=>h!=="");
+          // Tomar solo filas de datos: después de la cabecera, que tengan al menos una celda con valor
+          // y cuya primera celda parezca una fecha (empieza con 4 dígitos = año)
+          rows=arr.slice(headerRowIdx+1)
+            .filter(r=>{
+              const first=String(r[0]||"").trim();
+              return first.match(/^\d{4}/)&&r.some(c=>c!=="");
+            })
+            .map(r=>{
+              const obj={};
+              hdrs.forEach((h,i)=>obj[h]=r[i]!==undefined&&r[i]!==null?String(r[i]).replace(/\n/g," ").trim():"");
+              return obj;
+            });
         }catch(err){setImportMsg("❌ Error leyendo Excel: "+err.message);return;}
       }else{
         const res=parseCSV(e.target.result);hdrs=res.headers;rows=res.rows;
       }
-      if(!hdrs||!hdrs.length){setImportMsg("❌ No se pudo leer el archivo. Verifica que sea CSV o Excel válido.");return;}
+      if(!hdrs||!hdrs.length){setImportMsg("❌ No se pudo leer el archivo.");return;}
       setHeaders(hdrs);setRawRows(rows);
-      setMapCols({
-        fecha:hdrs.find(h=>/fecha|date|fec/i.test(h))||"",
-        descripcion:hdrs.find(h=>/desc|concepto|detalle|glosa|referencia|ref/i.test(h))||"",
-        monto:hdrs.find(h=>/monto|valor|importe|amount|cred|deb/i.test(h))||"",
-      });
-      setStep(2);
+      const autoFecha=hdrs.find(h=>/^fecha$/i.test(h))||hdrs.find(h=>/fecha|date|fec/i.test(h))||"";
+      const autoDesc=hdrs.find(h=>/^concepto$/i.test(h))||hdrs.find(h=>/desc|concepto|detalle|glosa|ref/i.test(h))||"";
+      const autoMonto=hdrs.find(h=>/^monto$/i.test(h))||hdrs.find(h=>/monto|valor|importe|amount/i.test(h))||"";
+      setMapCols({fecha:autoFecha,descripcion:autoDesc,monto:autoMonto});
+      if(autoFecha&&autoMonto){setStep(3);}else{setStep(2);}
     };
-    if(esExcel){reader.readAsBinaryString(file);}else{reader.readAsText(file,"UTF-8");}
+    if(esExcel){reader.readAsArrayBuffer(file);}else{reader.readAsText(file,"UTF-8");}
   };
 
   const confirmarImport=async()=>{
     if(!mapCols.fecha||!mapCols.monto){setImportMsg("⚠️ Mapea Fecha y Monto como mínimo.");return;}
     setImportando(true);
     const nuevos=rawRows.map(r=>{
-      const montoRaw=(r[mapCols.monto]||"0").replace(/[$,\s]/g,"");
+      const montoRaw=String(r[mapCols.monto]||"0").replace(/[$,\s]/g,"");
       const monto=parseFloat(montoRaw)||0;
-      return{cuenta_id:sel.id,fecha:r[mapCols.fecha]||new Date().toISOString().split("T")[0],descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,conciliado:false};
+      const fechaNorm=normalizarFecha(r[mapCols.fecha]);
+      return{cuenta_id:sel.id,fecha:fechaNorm,descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,conciliado:false};
     }).filter(r=>r.monto!==0);
 
     const {error:e}=await db.from("movimientos_banco").insert(nuevos);
