@@ -1192,11 +1192,12 @@ function Conciliacion({db}){
       }
       if(!hdrs||!hdrs.length){setImportMsg("❌ No se pudo leer el archivo.");return;}
       setHeaders(hdrs);setRawRows(rows);
-      const autoFecha=hdrs.find(h=>/^fecha$/i.test(h))||hdrs.find(h=>/fecha|date|fec/i.test(h))||"";
-      const autoDesc=hdrs.find(h=>/^concepto$/i.test(h))||hdrs.find(h=>/desc|concepto|detalle|glosa|ref/i.test(h))||"";
-      const autoMonto=hdrs.find(h=>/^monto$/i.test(h))||hdrs.find(h=>/monto|valor|importe|amount/i.test(h))||"";
-      setMapCols({fecha:autoFecha,descripcion:autoDesc,monto:autoMonto});
-      if(autoFecha&&autoMonto){setStep(3);}else{setStep(2);}
+      setMapCols({
+        fecha:hdrs.find(h=>/^fecha$/i.test(h))||hdrs.find(h=>/fecha|date|fec/i.test(h))||"",
+        descripcion:hdrs.find(h=>/^concepto$/i.test(h))||hdrs.find(h=>/desc|concepto|detalle|glosa|ref/i.test(h))||"",
+        monto:hdrs.find(h=>/^monto$/i.test(h))||hdrs.find(h=>/monto|valor|importe|amount/i.test(h))||"",
+      });
+      setStep(2);
     };
     if(esExcel){reader.readAsArrayBuffer(file);}else{reader.readAsText(file,"UTF-8");}
   };
