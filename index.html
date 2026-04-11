@@ -52,7 +52,6 @@ const PERMISOS = {
 
 const TASA_ANUAL = 0.13;
 const RESERVA_PCT = 0.03;
-const MORA_DIARIA = 0.0003;
 
 const fmt = n => "$" + (+n||0).toLocaleString("es-EC",{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = d => d ? new Date(d+"T00:00:00").toLocaleDateString("es-EC") : "—";
@@ -61,9 +60,65 @@ const diasMora = fv => {
   const d = Math.floor((new Date()-new Date(fv+"T00:00:00"))/86400000);
   return d>0?d:0;
 };
-const calcCuota = (cap,meses) => {
-  const i = TASA_ANUAL/12;
-  return cap*(i*Math.pow(1+i,meses))/(Math.pow(1+i,meses)-1);
+
+// ── Cálculo flat anual ──────────────────────────────────────
+// cuota = (capital_bruto * (1 + tasa_flat)) / meses
+const calcCuotaFlat = (capital, meses, tasa) => {
+  const t = tasa || TASA_ANUAL;
+  return (capital * (1 + t)) / meses;
+};
+const calcTablaFlat = (capital, meses, tasa) => {
+  const t = tasa || TASA_ANUAL;
+  const interesTotal = capital * t;
+  const cuota = (capital + interesTotal) / meses;
+  const capMes = capital / meses;
+  const intMes = interesTotal / meses;
+  const tabla = [];
+  for(let n=1;n<=meses;n++){
+    const saldo = Math.max(0, capital - n * capMes);
+    tabla.push({n, cuota:+cuota.toFixed(2), capital:+capMes.toFixed(2), interes:+intMes.toFixed(2), saldo:+saldo.toFixed(2)});
+  }
+  return tabla;
+};
+// ── Mora SEPS/BCE — máximo legal ───────────────────────────
+const calcularRecargosLegales = (valorCuota, fechaVencimiento) => {
+  if(!fechaVencimiento) return {dias:0,interesMora:0,gastosCobranza:0,totalPagar:valorCuota,totalRecargo:0};
+  const hoy = new Date();
+  const venc = new Date(fechaVencimiento+"T00:00:00");
+  const dias = Math.floor((hoy - venc) / 86400000);
+  if(dias <= 2) return {dias,interesMora:0,gastosCobranza:0,totalPagar:valorCuota,totalRecargo:0};
+  const tasaAnualMora = 0.285;
+  const interesMora = +(valorCuota * (tasaAnualMora/360) * dias).toFixed(2);
+  let pctGastos = 0;
+  if(dias<=15) pctGastos=0.03;
+  else if(dias<=30) pctGastos=0.05;
+  else if(dias<=60) pctGastos=0.07;
+  else pctGastos=0.09;
+  const gastosCobranza = +(valorCuota * pctGastos).toFixed(2);
+  const totalRecargo = +(interesMora + gastosCobranza).toFixed(2);
+  return {dias, interesMora, gastosCobranza, totalRecargo, totalPagar:+(valorCuota + totalRecargo).toFixed(2)};
+};
+// Backward compat para dashboard
+const calcCuota = (cap,meses) => calcCuotaFlat(cap, meses, TASA_ANUAL);
+
+// ── Convertir número a letras (español) ───────────────────
+const numALetras = (n) => {
+  const num = Math.round(n * 100) / 100;
+  const entero = Math.floor(num);
+  const centavos = Math.round((num - entero) * 100);
+  const unidades = ["","un","dos","tres","cuatro","cinco","seis","siete","ocho","nueve","diez","once","doce","trece","catorce","quince","dieciséis","diecisiete","dieciocho","diecinueve","veinte","veintiuno","veintidós","veintitrés","veinticuatro","veinticinco","veintiséis","veintisiete","veintiocho","veintinueve"];
+  const decenas = ["","diez","veinte","treinta","cuarenta","cincuenta","sesenta","setenta","ochenta","noventa"];
+  const centenas = ["","cien","doscientos","trescientos","cuatrocientos","quinientos","seiscientos","setecientos","ochocientos","novecientos"];
+  const toWords = (n) => {
+    if(n===0) return "cero";
+    if(n<30) return unidades[n];
+    if(n<100) return decenas[Math.floor(n/10)]+(n%10>0?" y "+unidades[n%10]:"");
+    if(n<1000) return centenas[Math.floor(n/100)]+(n%100>0?" "+toWords(n%100):"");
+    if(n<2000) return "mil"+(n%1000>0?" "+toWords(n%1000):"");
+    if(n<1000000) return toWords(Math.floor(n/1000))+" mil"+(n%1000>0?" "+toWords(n%1000):"");
+    return n.toString();
+  };
+  return toWords(entero)+" dólares"+(centavos>0?" con "+centavos+" centavos":"")+" con 00/100";
 };
 
 function Buscador({valor,onChange,placeholder="🔍 Buscar por nombre, cédula, teléfono..."}){
@@ -287,6 +342,10 @@ function Dashboard({db}){
   const totalCuotasMes=sociosCredito.reduce((a,s)=>a+s.cuota_mensual,0);
   const sociosAlDia=sociosCredito.filter(s=>diasMora(s.fecha_vence)===0).length;
   const sociosMoraCount=sociosCredito.filter(s=>diasMora(s.fecha_vence)>0).length;
+  const totalIngresosMora=sociosCredito.reduce((a,s)=>{
+    const rec=calcularRecargosLegales(s.cuota_mensual,s.fecha_vence);
+    return a+(rec.totalRecargo||0);
+  },0);
   const NIIF={
     creditos_activos:21,
     monto_desembolsado:47856.27,
@@ -371,6 +430,11 @@ function Dashboard({db}){
         <StatCard label="Socios en Mora" value={sociosMoraCount} sub={`de ${sociosCredito.length} con crédito`} color={C.red}/>
         <StatCard label="Sin Conciliar" value={data?.sin_conciliar||0} sub="movimientos" color={C.yellow}/>
         <StatCard label="Patrimonio/Reserva" value={fmt(data?.total_patrimonio||0)} color={C.purple}/>
+        <div style={{background:C.card,border:`2px solid #dc2626`,borderRadius:12,padding:"18px 20px",borderLeft:`3px solid #dc2626`,flex:1,minWidth:140,cursor:"pointer"}} onClick={()=>alert("Detalle mora SEPS:\n\nInterés mora (28.5% anual): calculado diariamente\nGastos cobranza: 3%-9% según tramo\n\nSocios en mora: "+sociosMoraCount)}>
+          <div style={{fontSize:10,color:C.muted,fontWeight:700,letterSpacing:"0.1em",textTransform:"uppercase",marginBottom:5}}>💰 Ingresos x Mora</div>
+          <div style={{fontSize:24,fontWeight:800,color:"#f87171",fontFamily:"'DM Mono',monospace"}}>{fmt(totalIngresosMora)}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:3}}>{sociosMoraCount} socios · SEPS/BCE</div>
+        </div>
       </div>
 
       <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:20}}>
@@ -448,15 +512,15 @@ function Dashboard({db}){
           {enMora.length===0
             ?<p style={{color:C.muted,fontSize:13}}>✅ Sin mora activa</p>
             :enMora.map(s=>{
-              const d=diasMora(s.fecha_vence);
-              const intM=(s.saldo_credito*MORA_DIARIA*d).toFixed(2);
+              const rec=calcularRecargosLegales(s.cuota_mensual,s.fecha_vence);
               return(
                 <div key={s.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
                   <div>
                     <div style={{color:C.white,fontSize:13,fontWeight:600}}>{s.nombre}</div>
-                    <div style={{color:C.muted,fontSize:12}}>{fmt(s.saldo_credito)} · Int. mora: ${intM}</div>
+                    <div style={{color:C.muted,fontSize:12}}>{fmt(s.saldo_credito)} · Recargo: {fmt(rec.totalRecargo)}</div>
+                    <div style={{color:C.muted,fontSize:10}}>Mora: {fmt(rec.interesMora)} · Cobranza: {fmt(rec.gastosCobranza)}</div>
                   </div>
-                  <Badge color={d>15?"red":"yellow"}>{d} días</Badge>
+                  <Badge color={rec.dias>15?"red":"yellow"}>{rec.dias} días</Badge>
                 </div>
               );
             })}
@@ -659,7 +723,7 @@ function Cartera({db}){
           <tbody>
             {filtrados.map((s,i)=>{
               const m=diasMora(s.fecha_vence);
-              const intM=(s.saldo_credito*MORA_DIARIA*m).toFixed(2);
+              const rec=calcularRecargosLegales(s.cuota_mensual,s.fecha_vence);
               return(
                 <tr key={s.id} style={{background:m>0?"rgba(239,68,68,0.04)":i%2===0?"transparent":"#0f1a2d",borderBottom:`1px solid ${C.border}`}}>
                   <td style={{padding:"13px 14px",color:C.white,fontSize:14,fontWeight:600,whiteSpace:"nowrap"}}>{s.nombre}</td>
@@ -667,7 +731,7 @@ function Cartera({db}){
                   <td style={{padding:"13px 14px",color:C.blue,fontSize:13,fontFamily:"'DM Mono',monospace"}}>{fmt(s.cuota_mensual)}</td>
                   <td style={{padding:"13px 14px",color:m>0?C.red:C.muted,fontSize:12,whiteSpace:"nowrap"}}>{fmtDate(s.fecha_vence)}</td>
                   <td style={{padding:"13px 14px"}}>
-                    {m>0?<div><div style={{color:C.red,fontWeight:700,fontSize:13}}>{m} días</div><div style={{color:C.muted,fontSize:11}}>Int: ${intM}</div></div>:<span style={{color:C.muted}}>—</span>}
+                    {m>0?<div><div style={{color:C.red,fontWeight:700,fontSize:13}}>{m} días</div><div style={{color:C.muted,fontSize:11}}>Recargo: {fmt(rec.totalRecargo)}</div></div>:<span style={{color:C.muted}}>—</span>}
                   </td>
                   <td style={{padding:"13px 14px"}}><Badge color={m>15?"red":m>0?"yellow":"green"}>{m>15?"Crítico":m>0?"En Mora":"Al Día"}</Badge></td>
                   <td style={{padding:"13px 14px"}}>
@@ -721,6 +785,108 @@ function Cartera({db}){
   );
 }
 
+// ══════════════════════════════════════════
+// GENERADOR DE CONTRATO IMPRIMIBLE
+// ══════════════════════════════════════════
+function generarContrato({socio,monto,montoNeto,reserva,tasa,plazo,cuota,interesTotal,diaPago,fechaDesembolso,fechaPrimera,fechaFin,garantia,tipoCredito,tabla}){
+  const fechaObj=new Date(fechaDesembolso+"T00:00:00");
+  const meses=["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  const diaStr=fechaObj.getDate();
+  const mesStr=meses[fechaObj.getMonth()];
+  const anioStr=fechaObj.getFullYear();
+  const fPrimera=new Date(fechaPrimera+"T00:00:00");
+  const mesPago=meses[fPrimera.getMonth()];
+  const anioPago=fPrimera.getFullYear();
+  const fFin=new Date(fechaFin+"T00:00:00");
+  const diaPagoFin=fFin.getDate();
+  const mesFin=meses[fFin.getMonth()];
+  const anioFin=fFin.getFullYear();
+  const tasaPct=(tasa*100).toFixed(0);
+  const filas=tabla.map((r,i)=>{
+    const fP=new Date(fPrimera.getFullYear(),fPrimera.getMonth()+i,diaPago);
+    return `<tr><td>${r.n}</td><td>$${r.cuota.toFixed(2)}</td><td>$${r.saldo.toFixed(2)}</td><td>${fP.toLocaleDateString("es-EC",{day:"2-digit",month:"2-digit",year:"numeric"})}</td></tr>`;
+  }).join("");
+  const html=`<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"/>
+  <title>Contrato de Crédito — ${socio.nombre}</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:30px;color:#222;font-size:13px;}
+    h1{text-align:center;font-size:16px;text-transform:uppercase;margin-bottom:4px;}
+    .subtitulo{text-align:center;font-size:12px;margin-bottom:24px;color:#555;}
+    .resumen{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:12px;}
+    .resumen td,.resumen th{border:1px solid #aaa;padding:6px 10px;}
+    .resumen th{background:#1a3a6b;color:#fff;text-align:left;}
+    .resumen tr:nth-child(even){background:#f5f5f5;}
+    .clausula{margin-bottom:14px;}
+    .clausula strong{display:block;margin-bottom:4px;text-transform:uppercase;}
+    .firmas{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:50px;}
+    .firma{text-align:center;}
+    .firma .linea{border-top:1px solid #333;margin-bottom:6px;margin-top:40px;}
+    table.amort{width:100%;border-collapse:collapse;font-size:11px;margin-top:12px;}
+    table.amort th{background:#1a3a6b;color:#fff;padding:6px;text-align:center;}
+    table.amort td{padding:5px 8px;border-bottom:1px solid #ddd;text-align:center;}
+    table.amort tr:nth-child(even){background:#f9f9f9;}
+    @media print{button{display:none!important;}}
+  </style></head><body>
+  <button onclick="window.print()" style="position:fixed;top:16px;right:16px;background:#1a3a6b;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:700;cursor:pointer;">🖨️ Imprimir / Guardar PDF</button>
+  <h1>Contrato de Crédito</h1>
+  <div class="subtitulo">Caja de Ahorro y Crédito "CADENA" — Quito, Barrio Virgen del Quinche</div>
+
+  <table class="resumen">
+    <tr><th colspan="4">${tipoCredito} — Nro. Transacción: Auto</th></tr>
+    <tr><th>Fecha</th><td>${diaStr.toString().padStart(2,"0")}/${(fechaObj.getMonth()+1).toString().padStart(2,"0")}/${anioStr}</td><th>Día de Pago</th><td>Día ${diaPago} de cada mes</td></tr>
+    <tr><th>Nombre</th><td colspan="3">${socio.nombre}</td></tr>
+    <tr><th>Cédula</th><td>${socio.cedula}</td><th>Garantía</th><td>${garantia.toUpperCase()}</td></tr>
+    <tr><th>Monto Aprobado</th><td>$${monto.toFixed(2)}</td><th>Reserva Legal 3%</th><td>-$${reserva.toFixed(2)}</td></tr>
+    <tr><th>Tasa Flat Anual</th><td>${tasaPct}%</td><th>Interés Total</th><td>$${interesTotal.toFixed(2)}</td></tr>
+    <tr><th>Plazo</th><td>${plazo} meses</td><th>Cuota Mensual</th><td>$${cuota.toFixed(2)}</td></tr>
+    <tr><th>Valor a Recibir</th><td colspan="3"><strong>$${montoNeto.toFixed(2)}</strong></td></tr>
+  </table>
+
+  <div class="clausula"><strong>Primera: Objeto</strong>
+  El/la DEUDOR/A asume un Crédito ${tipoCredito} por la suma de $${monto.toFixed(2)} (${numALetras(monto)}), en calidad de préstamo.</div>
+
+  <div class="clausula"><strong>Segunda: Plazo y Fecha de Pago</strong>
+  El/la DEUDOR/A se compromete a devolver el capital más los intereses de la siguiente manera:<br/>
+  Día de pago: El día ${diaPago} de cada mes a partir del mes de ${mesPago} del ${anioPago}.<br/>
+  Fecha de finalización: El préstamo deberá estar cancelado en su totalidad el día ${diaPagoFin} de ${mesFin} del ${anioFin}.</div>
+
+  <div class="clausula"><strong>Tercera: Intereses</strong>
+  El/la DEUDOR/A se compromete a cancelar el 3% de la Reserva Legal más el ${tasaPct}% del Interés anual flat mensualizados.<br/>
+  Reserva Legal: $${reserva.toFixed(2)} (${numALetras(reserva)}) valor que se descontará al momento del desembolso; en caso de precancelación no se realizará descuento.<br/>
+  Interés anual: $${interesTotal.toFixed(2)} (${numALetras(interesTotal)}) en caso de precancelación se descontará de acuerdo a los meses de pago anticipado.</div>
+
+  <div class="clausula"><strong>Cuarta: Mora y Multa</strong>
+  El/la DEUDOR/A tiene dos días de gracia para cancelar el valor acordado en las fechas detalladas en la tabla de amortización adjunta. En caso de que al tercer día no realice el pago, se constituirá en mora de forma automática. Por este concepto, el/la DEUDOR/A se obliga a pagar:<br/>
+  • Interés de mora: ${tasaPct === "28.5" ? "28.50" : "28.50"}% anual sobre el saldo de la cuota (máximo legal BCE/SEPS), calculado diariamente.<br/>
+  • Gastos de cobranza: 3% (días 3-15) · 5% (días 16-30) · 7% (días 31-60) · 9% (más de 60 días) sobre el valor de la cuota vencida, según Art. 130 Código Monetario y Financiero.</div>
+
+  <div class="clausula"><strong>Quinta: Garantía</strong>
+  Para garantizar el cumplimiento de esta obligación, el/la DEUDOR/A ${garantia.toLowerCase()==="sin garante"?"no presenta garante adicional":garantia.toLowerCase()==="con garante"?"presenta garante personal":"deja "+garantia+" en garantía"}, la que se le devolverá una vez cancelada la totalidad de la deuda.</div>
+
+  <div class="clausula"><strong>Sexta: Aceptación y Firmas</strong>
+  Para constancia de lo acordado, el/la DEUDOR/A firma el presente documento donde consta la tabla de amortización.</div>
+
+  <div class="firmas">
+    <div class="firma"><div class="linea"></div><div>NOMBRE: ${socio.nombre}</div><div>CÉDULA: ${socio.cedula}</div><div>DEUDOR/A</div></div>
+    <div class="firma"><div class="linea"></div><div>REPRESENTANTE LEGAL</div><div>CAJA DE AHORRO Y CRÉDITO CADENA</div></div>
+  </div>
+
+  <div style="margin-top:40px;"><h3 style="text-align:center;font-size:14px;text-transform:uppercase;border-bottom:2px solid #1a3a6b;padding-bottom:6px;">Tabla de Amortización</h3>
+  <table class="amort">
+    <thead><tr><th>Nro.</th><th>Cuota</th><th>Saldo Capital</th><th>Fecha de Pago</th></tr></thead>
+    <tbody>${filas}</tbody>
+  </table></div>
+
+  <div class="firmas" style="margin-top:40px;">
+    <div class="firma"><div class="linea"></div><div>NOMBRE: ${socio.nombre}</div><div>DEUDOR/A</div></div>
+    <div class="firma"><div class="linea"></div><div>REPRESENTANTE LEGAL</div><div>CAJA DE AHORRO Y CRÉDITO CADENA</div></div>
+  </div>
+  </body></html>`;
+  const ventana=window.open("","_blank");
+  ventana.document.write(html);
+  ventana.document.close();
+}
+
 function Transacciones({db,sesion}){
   const [socios,setSocios]=useState([]);
   const [cuentas,setCuentas]=useState([]);
@@ -733,7 +899,7 @@ function Transacciones({db,sesion}){
   const [tipo,setTipo]=useState("deposito");
   const [buscarSocio,setBuscarSocio]=useState("");
   const [verTabla,setVerTabla]=useState(false);
-  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12"});
+  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"13",tasaCustom:"",diaPago:"7",garantia:"letra",garantiaOtro:"",tipoCredito:"ordinario",tipoCreditoOtro:""});
 
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -749,19 +915,13 @@ function Transacciones({db,sesion}){
   const socioSel=socios.find(s=>s.id===form.socioId);
   const plazo=+form.plazo||12;
   const montoVal=+form.monto||0;
+  const tasaNum=form.tasa==="custom"?(+form.tasaCustom/100||TASA_ANUAL):(+form.tasa/100||TASA_ANUAL);
   const reserva=tipo==="desembolso"?+(montoVal*RESERVA_PCT).toFixed(2):0;
   const montoNeto=tipo==="desembolso"?+(montoVal-reserva).toFixed(2):montoVal;
-  const cuotaCalc=tipo==="desembolso"&&montoNeto>0?+calcCuota(montoNeto,plazo).toFixed(2):0;
+  const cuotaCalc=tipo==="desembolso"&&montoVal>0?+calcCuotaFlat(montoVal,plazo,tasaNum).toFixed(2):0;
+  const interesTotalCredito=tipo==="desembolso"&&montoVal>0?+(montoVal*tasaNum).toFixed(2):0;
 
-  const calcTabla=(cap,meses)=>{
-    const i=TASA_ANUAL/12; let s=cap; const t=[];
-    for(let n=1;n<=meses;n++){
-      const int=+(s*i).toFixed(2); const cap2=+(+calcCuota(cap,meses).toFixed(2)-int).toFixed(2);
-      s=Math.max(0,+(s-cap2).toFixed(2));
-      t.push({n,cuota:+calcCuota(cap,meses).toFixed(2),capital:cap2,interes:int,saldo:s});
-    }
-    return t;
-  };
+  const calcTabla=(cap,meses)=>calcTablaFlat(cap,meses,tasaNum);
 
   const cargar=useCallback(async()=>{
     setLoading(true);
@@ -800,20 +960,58 @@ function Transacciones({db,sesion}){
       }]);
       if(e) throw e;
       if(tipo==="desembolso"){
-        const fechaPrimera=new Date(new Date(form.fecha).getTime()+30*86400000).toISOString().split("T")[0];
+        // Calcular día de pago y fechas
+        const diaPago=+form.diaPago||7;
+        const fechaDesemb=new Date(form.fecha+"T00:00:00");
+        const mesPrimera=new Date(fechaDesemb.getFullYear(), fechaDesemb.getMonth()+1, diaPago);
+        const fechaPrimera=mesPrimera.toISOString().split("T")[0];
+        const fechaFin=new Date(mesPrimera.getFullYear(), mesPrimera.getMonth()+plazo-1, diaPago).toISOString().split("T")[0];
+        const garantiaTexto=form.garantia==="otro"?form.garantiaOtro:(form.garantia==="sin_garante"?"SIN GARANTE":form.garantia==="con_garante"?"CON GARANTE":form.garantia==="letra"?"letra de cambio":"cheque");
+        const tipoCreditoTexto=form.tipoCredito==="otro"?form.tipoCreditoOtro:(form.tipoCredito==="ordinario"?"Ordinario":"Extraordinario");
         const {error:e2}=await db.from("prestamos").insert([{
           socio_id:form.socioId,
           monto_aprobado:montoVal,
           monto_entregado:montoNeto,
           reserva_legal:reserva,
-          tasa_anual:TASA_ANUAL*100,
+          tasa_anual:tasaNum*100,
           plazo_meses:plazo,
           cuota_mensual:cuotaCalc,
           fecha_desembolso:form.fecha,
           fecha_primera_cuota:fechaPrimera,
-          saldo_actual:montoNeto,
+          saldo_actual:montoVal,
+          dia_pago:diaPago,
+          garantia:garantiaTexto,
+          tipo_credito:tipoCreditoTexto,
         }]);
         if(e2) throw e2;
+        // Reserva legal → cuenta patrimonio
+        await db.from("transacciones").insert([{
+          socio_id:form.socioId,
+          tipo:"reserva_legal",
+          monto:reserva,
+          fecha:form.fecha,
+          descripcion:`Reserva estatutaria 3% — ${socioSel.nombre} · Desembolso ${fmt(montoVal)}`,
+          usuario:sesion.nombre,
+        }]);
+        // Generar contrato imprimible
+        const tablaAmort=calcTablaFlat(montoVal,plazo,tasaNum);
+        generarContrato({
+          socio:socioSel,
+          monto:montoVal,
+          montoNeto,
+          reserva,
+          tasa:tasaNum,
+          plazo,
+          cuota:cuotaCalc,
+          interesTotal:interesTotalCredito,
+          diaPago,
+          fechaDesembolso:form.fecha,
+          fechaPrimera,
+          fechaFin,
+          garantia:garantiaTexto,
+          tipoCredito:tipoCreditoTexto,
+          tabla:tablaAmort,
+        });
       }
       if(form.cuentaId){
         await db.from("movimientos_banco").insert([{
@@ -837,7 +1035,7 @@ function Transacciones({db,sesion}){
       const entrada={id:Date.now(),tipo,icono:tipoActual.icon,label:tipoActual.label,nombre:socioSel.nombre,cedula:socioSel.cedula,monto:montoVal,voucher:form.voucher,color:tipoActual.color};
       setHistorial(p=>[entrada,...p]);
       setConfirmacion({socio:socioSel,socioUpd,monto:montoVal,tipo,label:tipoActual.label,color:tipoActual.color,reserva,cuota:cuotaCalc,msgWsp:msg,linkWsp:`https://wa.me/593${socioSel.telefono?.replace(/^0/,"")}?text=${encodeURIComponent(msg)}`});
-      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12"});
+      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"13",tasaCustom:"",diaPago:"7",garantia:"letra",garantiaOtro:"",tipoCredito:"ordinario",tipoCreditoOtro:""});
       setVerTabla(false);
     }catch(e){setError("Error: "+e.message);}
     setProcesando(false);
@@ -916,17 +1114,73 @@ function Transacciones({db,sesion}){
               </div>
               {tipo==="desembolso"&&(
                 <div>
-                  <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📅 Plazo *</label>
-                  <select value={form.plazo} onChange={e=>f("plazo",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
-                    {[3,6,9,12,18,24,36].map(p=><option key={p} value={p}>{p} meses</option>)}
-                  </select>
+                  {/* PLAZO */}
+                  <div style={{marginBottom:12}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📅 Plazo *</label>
+                    <select value={form.plazo} onChange={e=>f("plazo",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
+                      {[3,6,9,12,18,24,36].map(p=><option key={p} value={p}>{p} meses</option>)}
+                    </select>
+                  </div>
+                  {/* TASA */}
+                  <div style={{marginBottom:12}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📈 Tasa Flat Anual *</label>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6,marginBottom:6}}>
+                      {["11","13","14","custom"].map(t=>(
+                        <button key={t} onClick={()=>f("tasa",t)} style={{background:form.tasa===t?C.gold:C.bg,color:form.tasa===t?"#000":C.muted,border:`1px solid ${form.tasa===t?C.gold:C.border}`,borderRadius:6,padding:"7px 4px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+                          {t==="custom"?"Otra":t+"%"}
+                        </button>
+                      ))}
+                    </div>
+                    {form.tasa==="custom"&&(
+                      <input type="number" placeholder="Ej: 10" value={form.tasaCustom} onChange={e=>f("tasaCustom",e.target.value)}
+                        style={{width:"100%",background:C.bg,border:`1px solid ${C.gold}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}/>
+                    )}
+                  </div>
+                  {/* DÍA DE PAGO */}
+                  <div style={{marginBottom:12}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📆 Día de Pago mensual</label>
+                    <input type="number" min="1" max="28" placeholder="Ej: 7" value={form.diaPago} onChange={e=>f("diaPago",e.target.value)}
+                      style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13}}/>
+                    <div style={{color:C.muted,fontSize:10,marginTop:3}}>2 días de gracia · mora desde el día 3</div>
+                  </div>
+                  {/* TIPO DE CRÉDITO */}
+                  <div style={{marginBottom:12}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📋 Tipo de Crédito</label>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,marginBottom:6}}>
+                      {[["ordinario","Ordinario"],["extraordinario","Extraordinario"],["otro","Otro"]].map(([v,l])=>(
+                        <button key={v} onClick={()=>f("tipoCredito",v)} style={{background:form.tipoCredito===v?C.purple:C.bg,color:form.tipoCredito===v?"#fff":C.muted,border:`1px solid ${form.tipoCredito===v?C.purple:C.border}`,borderRadius:6,padding:"7px 4px",fontSize:11,fontWeight:700,cursor:"pointer"}}>{l}</button>
+                      ))}
+                    </div>
+                    {form.tipoCredito==="otro"&&(
+                      <input type="text" placeholder="Especificar tipo..." value={form.tipoCreditoOtro} onChange={e=>f("tipoCreditoOtro",e.target.value)}
+                        style={{width:"100%",background:C.bg,border:`1px solid ${C.purple}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}/>
+                    )}
+                  </div>
+                  {/* GARANTÍA */}
+                  <div style={{marginBottom:12}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>🛡️ Garantía</label>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:6}}>
+                      {[["letra","Letra de Cambio"],["cheque","Cheque"],["sin_garante","Sin Garante"],["con_garante","Con Garante"],["otro","Otro"]].map(([v,l])=>(
+                        <button key={v} onClick={()=>f("garantia",v)} style={{background:form.garantia===v?C.blue:C.bg,color:form.garantia===v?"#fff":C.muted,border:`1px solid ${form.garantia===v?C.blue:C.border}`,borderRadius:6,padding:"7px 8px",fontSize:11,fontWeight:700,cursor:"pointer",textAlign:"left"}}>{l}</button>
+                      ))}
+                    </div>
+                    {form.garantia==="otro"&&(
+                      <input type="text" placeholder="Especificar garantía..." value={form.garantiaOtro} onChange={e=>f("garantiaOtro",e.target.value)}
+                        style={{width:"100%",background:C.bg,border:`1px solid ${C.blue}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}/>
+                    )}
+                  </div>
+                  {/* RESUMEN FINANCIERO */}
                   {montoVal>0&&(
-                    <div style={{marginTop:10,background:"#1a0a2e",border:"1px solid #4c1d95",borderRadius:10,padding:12}}>
-                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Sistema Francés · 13% anual</div>
+                    <div style={{marginTop:4,background:"#1a0a2e",border:"1px solid #4c1d95",borderRadius:10,padding:12}}>
+                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Crédito Flat {tasaNum*100}% anual</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Bruto</div><div style={{color:C.white,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoVal)}</div></div>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Reserva 3%</div><div style={{color:C.red,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>-{fmt(reserva)}</div></div>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Entregado</div><div style={{color:C.green,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoNeto)}</div></div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                        <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Interés total</div><div style={{color:C.yellow,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(interesTotalCredito)}</div></div>
+                        <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Total a devolver</div><div style={{color:C.gold,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoVal+interesTotalCredito)}</div></div>
                       </div>
                       <div style={{background:"rgba(139,92,246,0.15)",borderRadius:8,padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                         <span style={{color:"#c4b5fd",fontSize:12,fontWeight:700}}>Cuota mensual:</span>
@@ -937,22 +1191,29 @@ function Transacciones({db,sesion}){
                       </button>
                     </div>
                   )}
-                  {verTabla&&montoNeto>0&&(
+                  {verTabla&&montoVal>0&&(
                     <div style={{marginTop:8,background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden",maxHeight:200,overflowY:"auto"}}>
                       <table style={{fontSize:11}}>
                         <thead><tr style={{background:"#0d1a2e",position:"sticky",top:0}}>
-                          {["#","Cuota","Capital","Interés","Saldo"].map(h=><th key={h} style={{padding:"6px 10px",textAlign:"right",color:C.muted,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>{h}</th>)}
+                          {["#","Cuota","Capital","Interés","Saldo","Fecha"].map(h=><th key={h} style={{padding:"6px 10px",textAlign:"right",color:C.muted,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>{h}</th>)}
                         </tr></thead>
                         <tbody>
-                          {calcTabla(montoNeto,plazo).map((r,i)=>(
-                            <tr key={r.n} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"transparent":"#0f1a2d"}}>
-                              <td style={{padding:"5px 10px",color:C.muted,textAlign:"right"}}>{r.n}</td>
-                              <td style={{padding:"5px 10px",color:C.gold,fontFamily:"'DM Mono',monospace",textAlign:"right",fontWeight:700}}>{fmt(r.cuota)}</td>
-                              <td style={{padding:"5px 10px",color:C.blue,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.capital)}</td>
-                              <td style={{padding:"5px 10px",color:C.red,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.interes)}</td>
-                              <td style={{padding:"5px 10px",color:C.white,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.saldo)}</td>
-                            </tr>
-                          ))}
+                          {calcTabla(montoVal,plazo).map((r,i)=>{
+                            const diaPago=+form.diaPago||7;
+                            const fechaDesemb=new Date((form.fecha||new Date().toISOString().split("T")[0])+"T00:00:00");
+                            const fPago=new Date(fechaDesemb.getFullYear(),fechaDesemb.getMonth()+i+1,diaPago);
+                            const fStr=fPago.toLocaleDateString("es-EC",{day:"2-digit",month:"2-digit",year:"numeric"});
+                            return(
+                              <tr key={r.n} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"transparent":"#0f1a2d"}}>
+                                <td style={{padding:"5px 10px",color:C.muted,textAlign:"right"}}>{r.n}</td>
+                                <td style={{padding:"5px 10px",color:C.gold,fontFamily:"'DM Mono',monospace",textAlign:"right",fontWeight:700}}>{fmt(r.cuota)}</td>
+                                <td style={{padding:"5px 10px",color:C.blue,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.capital)}</td>
+                                <td style={{padding:"5px 10px",color:C.red,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.interes)}</td>
+                                <td style={{padding:"5px 10px",color:C.white,fontFamily:"'DM Mono',monospace",textAlign:"right"}}>{fmt(r.saldo)}</td>
+                                <td style={{padding:"5px 10px",color:C.muted,textAlign:"right",fontSize:10}}>{fStr}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -1065,9 +1326,640 @@ function Transacciones({db,sesion}){
 }
 
 // ══════════════════════════════════════════
-// CONCILIACIÓN — con soporte CSV + Excel
+// CONCILIACIÓN INTELIGENTE — CSV + Excel + Aprendizaje
 // ══════════════════════════════════════════
 function Conciliacion({db}){
+  const [buscar,setBuscar]=useState("");
+  const [cuentas,setCuentas]=useState([]);
+  const [movimientos,setMovimientos]=useState([]);
+  const [patrones,setPatrones]=useState([]);
+  const [sel,setSel]=useState(null);
+  const [socios,setSocios]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [loadingMov,setLoadingMov]=useState(false);
+  // Import modal
+  const [modalImport,setModalImport]=useState(false);
+  const [step,setStep]=useState(1);
+  const [headers,setHeaders]=useState([]);
+  const [rawRows,setRawRows]=useState([]);
+  const [mapCols,setMapCols]=useState({fecha:"",descripcion:"",monto:""});
+  const [nuevoSaldo,setNuevoSaldo]=useState("");
+  const [importMsg,setImportMsg]=useState("");
+  const [importando,setImportando]=useState(false);
+  // Modal conciliar manual
+  const [modalConc,setModalConc]=useState(null); // movimiento seleccionado
+  const [concStep,setConcStep]=useState(1);
+  const [concSocioQ,setConcSocioQ]=useState("");
+  const [concSocioId,setConcSocioId]=useState("");
+  const [concTipo,setConcTipo]=useState(""); // ahorro | pago_cuota | otro
+  const [concComentario,setConcComentario]=useState("");
+  const [concProcesando,setConcProcesando]=useState(false);
+  const [rendimiento,setRendimiento]=useState(0);
+  const [filtroEstado,setFiltroEstado]=useState("todos");
+
+  // ── Helpers de clasificación ─────────────────────────────
+  const esInteres=(desc)=>/interes a su favor|interés acreditado/i.test(desc||"");
+  const esDebito=(monto)=>monto<0;
+
+  const clasificar=(mov)=>{
+    if(mov.conciliado) return "conciliado";
+    if(esDebito(mov.monto)) return "debito";
+    if(esInteres(mov.descripcion)) return "auto";
+    // Buscar patrón aprendido
+    const p=patrones.find(p=>mov.descripcion?.toLowerCase().includes(p.patron_texto?.toLowerCase()));
+    if(p && p.veces_confirmado>=3) return "auto_aprendido";
+    if(p) return "sugerido";
+    return "pendiente";
+  };
+
+  const estadoLabel={
+    conciliado:{txt:"Conciliado",color:C.green,bg:"#052e16",badge:"green"},
+    auto:{txt:"Auto 🟢",color:C.green,bg:"#052e16",badge:"green"},
+    auto_aprendido:{txt:"Auto ✓",color:C.green,bg:"#052e16",badge:"green"},
+    sugerido:{txt:"Sugerido 🟡",color:C.yellow,bg:"#2d1f00",badge:"yellow"},
+    pendiente:{txt:"Pendiente",color:C.yellow,bg:"rgba(251,191,36,0.04)",badge:"yellow"},
+    debito:{txt:"Débito 🔴",color:C.red,bg:"rgba(239,68,68,0.04)",badge:"red"},
+  };
+
+  // ── Carga inicial ─────────────────────────────────────────
+  const cargarTodo=useCallback(async()=>{
+    setLoading(true);
+    const [{data:c},{data:s},{data:pt}]=await Promise.all([
+      db.from("cuentas_banco").select("*").eq("activa",true),
+      db.from("socios").select("id,nombre,cedula,saldo_ahorro,saldo_credito,cuota_mensual,fecha_vence").eq("activo",true),
+      db.from("conciliacion_patrones").select("*"),
+    ]);
+    setCuentas(c||[]);setSocios(s||[]);setPatrones(pt||[]);
+    if(c&&c.length>0&&!sel) setSel(c[0]);
+    setLoading(false);
+  },[db]);
+
+  useEffect(()=>{cargarTodo();},[cargarTodo]);
+
+  const cargarMovimientos=useCallback(async(cuentaId)=>{
+    if(!cuentaId) return;
+    setLoadingMov(true);
+    const {data}=await db.from("movimientos_banco").select("*").eq("cuenta_id",cuentaId).order("fecha",{ascending:false}).limit(200);
+    const movs=data||[];
+    setMovimientos(movs);
+    // Sumar rendimiento bancario ya conciliado
+    const rend=movs.filter(m=>m.conciliado&&esInteres(m.descripcion)).reduce((a,m)=>a+m.monto,0);
+    setRendimiento(rend);
+    setLoadingMov(false);
+  },[db]);
+
+  useEffect(()=>{if(sel)cargarMovimientos(sel.id);},[sel,cargarMovimientos]);
+
+  // ── Auto-conciliar al importar ───────────────────────────
+  const autoConciliarIntereses=async(movs)=>{
+    const pendientes=movs.filter(m=>!m.conciliado&&esInteres(m.descripcion));
+    if(!pendientes.length) return 0;
+    const ids=pendientes.map(m=>m.id);
+    await db.from("movimientos_banco").update({conciliado:true,tipo_conciliacion:"rendimiento_bancario"}).in("id",ids);
+    // Registrar en transacciones
+    for(const m of pendientes){
+      await db.from("transacciones").insert([{
+        tipo:"rendimiento_bancario",monto:m.monto,fecha:m.fecha,
+        descripcion:`Rendimiento bancario — ${m.descripcion}`,usuario:"Sistema",
+      }]);
+    }
+    return pendientes.length;
+  };
+
+  // ── Auto-conciliar patrones aprendidos (≥3 confirmaciones) ──
+  const autoConciliarPatrones=async(movs)=>{
+    let count=0;
+    const pendientes=movs.filter(m=>!m.conciliado&&!esInteres(m.descripcion)&&m.monto>0);
+    for(const m of pendientes){
+      const p=patrones.find(pt=>m.descripcion?.toLowerCase().includes(pt.patron_texto?.toLowerCase())&&pt.veces_confirmado>=3);
+      if(p){
+        await aplicarConciliacion(m,p.socio_id,p.tipo_transaccion,p.comentario||"",false);
+        count++;
+      }
+    }
+    return count;
+  };
+
+  // ── Aplicar conciliación (manual o auto) ────────────────
+  const aplicarConciliacion=async(mov,socioId,tipo,comentario,guardarPatron=true)=>{
+    const socio=socios.find(s=>s.id===socioId||s.id===+socioId);
+    // 1. Marcar movimiento
+    await db.from("movimientos_banco").update({
+      conciliado:true,tipo_conciliacion:tipo,socio_id:socioId||null,comentario_conciliacion:comentario||null
+    }).eq("id",mov.id);
+    // 2. Efecto en saldos
+    if(socioId){
+      if(tipo==="ahorro"){
+        const {data:s}=await db.from("socios").select("saldo_ahorro").eq("id",socioId).single();
+        await db.from("socios").update({saldo_ahorro:(s?.saldo_ahorro||0)+mov.monto}).eq("id",socioId);
+        await db.from("transacciones").insert([{socio_id:socioId,tipo:"deposito",monto:mov.monto,fecha:mov.fecha,descripcion:`Conciliación — ${mov.descripcion}`,usuario:"Conciliación"}]);
+      } else if(tipo==="pago_cuota"){
+        const {data:s}=await db.from("socios").select("saldo_credito").eq("id",socioId).single();
+        const nuevo=Math.max(0,(s?.saldo_credito||0)-mov.monto);
+        await db.from("socios").update({saldo_credito:nuevo}).eq("id",socioId);
+        await db.from("transacciones").insert([{socio_id:socioId,tipo:"pago_cuota",monto:mov.monto,fecha:mov.fecha,descripcion:`Conciliación — ${mov.descripcion}`,usuario:"Conciliación"}]);
+      } else {
+        await db.from("transacciones").insert([{socio_id:socioId||null,tipo:"otro",monto:mov.monto,fecha:mov.fecha,descripcion:`Conciliación — ${comentario||mov.descripcion}`,usuario:"Conciliación"}]);
+      }
+    }
+    // 3. Guardar / actualizar patrón
+    if(guardarPatron&&socioId){
+      const palabras=mov.descripcion?.split(/\s+/).slice(0,4).join(" ")||"";
+      const existing=patrones.find(p=>p.patron_texto===palabras);
+      if(existing){
+        await db.from("conciliacion_patrones").update({veces_confirmado:existing.veces_confirmado+1,ultimo_monto:mov.monto,ultima_fecha:mov.fecha,tipo_transaccion:tipo,comentario}).eq("id",existing.id);
+      } else {
+        await db.from("conciliacion_patrones").insert([{patron_texto:palabras,socio_id:socioId,tipo_transaccion:tipo,comentario,veces_confirmado:1,ultimo_monto:mov.monto,ultima_fecha:mov.fecha}]);
+      }
+    }
+  };
+
+  // ── Confirmar conciliación manual ────────────────────────
+  const confirmarConciliacionManual=async()=>{
+    if(!concTipo){return;}
+    if(concTipo!=="otro"&&!concSocioId){return;}
+    setConcProcesando(true);
+    await aplicarConciliacion(modalConc,concTipo==="otro"?"":concSocioId,concTipo,concComentario,true);
+    await Promise.all([cargarMovimientos(sel.id),cargarTodo()]);
+    setModalConc(null);setConcStep(1);setConcSocioQ("");setConcSocioId("");setConcTipo("");setConcComentario("");
+    setConcProcesando(false);
+  };
+
+  // ── Abrir modal conciliación ─────────────────────────────
+  const abrirConciliar=(mov)=>{
+    setModalConc(mov);setConcStep(1);
+    setConcSocioQ("");setConcSocioId("");setConcTipo("");setConcComentario("");
+    // Pre-llenar si hay patrón sugerido
+    const p=patrones.find(pt=>mov.descripcion?.toLowerCase().includes(pt.patron_texto?.toLowerCase()));
+    if(p){setConcSocioId(p.socio_id?.toString()||"");setConcTipo(p.tipo_transaccion||"");}
+  };
+
+  // ── Desmarcar conciliación ───────────────────────────────
+  const desmarcar=async(mov)=>{
+    await db.from("movimientos_banco").update({conciliado:false,tipo_conciliacion:null,socio_id:null}).eq("id",mov.id);
+    setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,conciliado:false}:m));
+  };
+
+  // ── CSV parser ───────────────────────────────────────────
+  const parseCSV=(text)=>{
+    const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
+    if(lines.length<2) return {headers:[],rows:[]};
+    const sep=lines[0].includes(";")?";":",";
+    const hdrs=lines[0].split(sep).map(h=>h.replace(/"/g,"").trim());
+    const rows=lines.slice(1).map(l=>{const vals=l.split(sep).map(v=>v.replace(/"/g,"").trim());const obj={};hdrs.forEach((h,i)=>obj[h]=vals[i]||"");return obj;});
+    return {headers:hdrs,rows};
+  };
+
+  const normalizarFecha=(raw)=>{
+    if(!raw) return new Date().toISOString().split("T")[0];
+    const s=String(raw).replace(/\n/g," ").trim();
+    const m=s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+    const d=new Date(s);
+    if(!isNaN(d)) return d.toISOString().split("T")[0];
+    return s.split(/[,\s]/)[0]||new Date().toISOString().split("T")[0];
+  };
+
+  const leerArchivo=(file)=>{
+    const esExcel=file.name.match(/\.(xlsx|xls)$/i)||file.type==="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"||file.type==="application/vnd.ms-excel";
+    const reader=new FileReader();
+    reader.onload=(e)=>{
+      let hdrs,rows;
+      if(esExcel){
+        try{
+          const data=new Uint8Array(e.target.result);
+          const wb=XLSX.read(data,{type:"array"});
+          const ws=wb.Sheets[wb.SheetNames[0]];
+          const arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
+          if(!arr||arr.length<2){setImportMsg("❌ No se pudo leer el Excel.");return;}
+          let headerRowIdx=0;
+          for(let i=0;i<arr.length;i++){const first=String(arr[i][0]||"").trim().toLowerCase();if(first==="fecha"||first==="date"){headerRowIdx=i;break;}}
+          hdrs=arr[headerRowIdx].map(h=>String(h).trim()).filter(h=>h!=="");
+          rows=arr.slice(headerRowIdx+1).filter(r=>{const first=String(r[0]||"").trim();return first.match(/^\d{4}/)&&r.some(c=>c!=="");}).map(r=>{const obj={};hdrs.forEach((h,i)=>obj[h]=r[i]!==undefined&&r[i]!==null?String(r[i]).replace(/\n/g," ").trim():"");return obj;});
+          // Auto-detectar columnas Pichincha
+          const mc={
+            fecha:hdrs.find(h=>/^fecha$/i.test(h))||"",
+            descripcion:hdrs.find(h=>/^concepto$/i.test(h))||hdrs.find(h=>/concepto|desc/i.test(h))||"",
+            monto:hdrs.find(h=>/^monto$/i.test(h))||hdrs.find(h=>/monto|valor/i.test(h))||"",
+          };
+          if(mc.fecha&&mc.monto){
+            setMapCols(mc);setHeaders(hdrs);setRawRows(rows);setStep(3);return;
+          }
+        }catch(err){setImportMsg("❌ Error leyendo Excel: "+err.message);return;}
+      } else {
+        const res=parseCSV(e.target.result);hdrs=res.headers;rows=res.rows;
+      }
+      if(!hdrs||!hdrs.length){setImportMsg("❌ No se pudo leer el archivo.");return;}
+      setHeaders(hdrs);setRawRows(rows);
+      setMapCols({fecha:hdrs.find(h=>/^fecha$/i.test(h))||hdrs.find(h=>/fecha|date/i.test(h))||"",descripcion:hdrs.find(h=>/^concepto$/i.test(h))||hdrs.find(h=>/desc|concepto|detalle/i.test(h))||"",monto:hdrs.find(h=>/^monto$/i.test(h))||hdrs.find(h=>/monto|valor|importe/i.test(h))||""});
+      setStep(2);
+    };
+    if(esExcel){reader.readAsArrayBuffer(file);}else{reader.readAsText(file,"UTF-8");}
+  };
+
+  const confirmarImport=async()=>{
+    if(!mapCols.fecha||!mapCols.monto){setImportMsg("⚠️ Mapea Fecha y Monto como mínimo.");return;}
+    setImportando(true);
+    const nuevos=rawRows.map(r=>{
+      const montoRaw=String(r[mapCols.monto]||"0").replace(/[$,\s]/g,"");
+      const monto=parseFloat(montoRaw)||0;
+      return{cuenta_id:sel.id,fecha:normalizarFecha(r[mapCols.fecha]),descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,conciliado:false};
+    }).filter(r=>r.monto!==0);
+    const {error:e}=await db.from("movimientos_banco").insert(nuevos);
+    if(e){setImportMsg("❌ Error: "+e.message);setImportando(false);return;}
+    if(nuevoSaldo) await db.from("cuentas_banco").update({saldo_banco:parseFloat(nuevoSaldo)}).eq("id",sel.id);
+    // Auto-conciliar intereses y patrones aprendidos
+    const {data:movNuevos}=await db.from("movimientos_banco").select("*").eq("cuenta_id",sel.id).eq("conciliado",false).order("fecha",{ascending:false}).limit(500);
+    const nIntereses=await autoConciliarIntereses(movNuevos||[]);
+    const nPatrones=await autoConciliarPatrones(movNuevos||[]);
+    setModalImport(false);setStep(1);setRawRows([]);setHeaders([]);setNuevoSaldo("");setImportMsg("");
+    await cargarTodo();await cargarMovimientos(sel.id);
+    alert(`✅ ${nuevos.length} movimientos importados.\n🟢 ${nIntereses} intereses auto-conciliados.\n🟡 ${nPatrones} conciliados por aprendizaje.`);
+    setImportando(false);
+  };
+
+  if(loading) return <Loader text="Cargando conciliación..."/>;
+
+  const diff=sel?(sel.saldo_banco-sel.saldo_sistema):0;
+  const movsFilt=movimientos.filter(m=>!buscar||m.descripcion?.toLowerCase().includes(buscar.toLowerCase()));
+  const porEstado=(e)=>movsFilt.filter(m=>clasificar(m)===e).length;
+  const sinConc=movimientos.filter(m=>!m.conciliado).length;
+  const movsVista=filtroEstado==="todos"?movsFilt:movsFilt.filter(m=>clasificar(m)===filtroEstado||(filtroEstado==="conciliado"&&m.conciliado));
+  const socioSugerido=modalConc&&patrones.find(p=>modalConc.descripcion?.toLowerCase().includes(p.patron_texto?.toLowerCase()));
+  const socioConcSel=socios.find(s=>s.id===+concSocioId);
+
+  return(
+    <div>
+      {/* HEADER */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div>
+          <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>Conciliación Bancaria Inteligente</h2>
+          <p style={{color:C.muted,fontSize:13}}>Aprendizaje automático · Excel Pichincha · Efectos en saldos</p>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>{setModalImport(true);setStep(1);}} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>📂 Importar Excel/CSV</button>
+        </div>
+      </div>
+
+      {/* WIDGET RENDIMIENTO BANCARIO */}
+      {rendimiento>0&&(
+        <div style={{background:"linear-gradient(135deg,#052e16,#0a3a1e)",border:`1px solid ${C.green}40`,borderRadius:12,padding:"14px 20px",marginBottom:16,display:"flex",alignItems:"center",gap:16}}>
+          <div style={{fontSize:28}}>💰</div>
+          <div>
+            <div style={{color:C.green,fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.08em"}}>Rendimiento Bancario Acumulado</div>
+            <div style={{color:C.white,fontSize:22,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(rendimiento)}</div>
+            <div style={{color:C.muted,fontSize:11}}>Intereses acreditados por Banco Pichincha — auto-conciliados</div>
+          </div>
+        </div>
+      )}
+
+      {/* SELECTOR DE CUENTA */}
+      <div className="four-col" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
+        {cuentas.map(c=>{
+          const d=c.saldo_banco-c.saldo_sistema;
+          const selected=sel?.id===c.id;
+          return(
+            <button key={c.id} onClick={()=>setSel(c)} style={{background:selected?C.gold:C.card,color:selected?"#000":C.text,border:`1px solid ${selected?C.gold:C.border}`,borderRadius:10,padding:12,cursor:"pointer",textAlign:"left"}}>
+              <div style={{fontSize:12,fontWeight:700}}>{c.banco}</div>
+              <div style={{fontSize:10,opacity:0.7,marginTop:2}}>{c.tipo}</div>
+              <div style={{fontSize:11,marginTop:4}}>{d===0?"✅ Cuadrado":`⚠️ Dif ${fmt(Math.abs(d))}`}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {sel&&(
+        <>
+          {/* STATS */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:10,marginBottom:16}}>
+            {[
+              ["Saldo Sistema",fmt(sel.saldo_sistema),C.white],
+              ["Saldo Banco",fmt(sel.saldo_banco),C.white],
+              ["Diferencia",diff===0?"✓ $0.00":fmt(Math.abs(diff)),diff===0?C.green:C.red],
+              ["Sin Conciliar",sinConc+" mov.",sinConc>0?C.yellow:C.green],
+              ["Conciliados",movimientos.filter(m=>m.conciliado).length+" mov.",C.green],
+            ].map(([lbl,val,col])=>(
+              <div key={lbl} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:12}}>
+                <div style={{fontSize:9,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>{lbl}</div>
+                <div style={{color:col,fontSize:16,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* FILTROS + BÚSQUEDA */}
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
+            <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar movimiento..."/>
+            {[
+              ["todos","Todos",C.muted],
+              ["auto","🟢 Auto",C.green],
+              ["sugerido","🟡 Sugeridos",C.yellow],
+              ["pendiente","🟠 Pendientes",C.yellow],
+              ["debito","🔴 Débitos",C.red],
+              ["conciliado","✅ Conciliados",C.green],
+            ].map(([v,l,col])=>(
+              <button key={v} onClick={()=>setFiltroEstado(v)} style={{background:filtroEstado===v?`${col}22`:C.card,color:filtroEstado===v?col:C.muted,border:`1px solid ${filtroEstado===v?col:C.border}`,borderRadius:8,padding:"6px 12px",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>
+                {l} {v!=="todos"?`(${v==="conciliado"?movimientos.filter(m=>m.conciliado).length:porEstado(v)})`:""}</button>
+            ))}
+          </div>
+
+          {/* TABLA */}
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,overflow:"hidden"}}>
+            <div style={{padding:"12px 18px",background:"#0d1a2e",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{color:C.white,fontSize:13,fontWeight:700}}>{sel.banco} — {sel.numero}</span>
+              <span style={{color:C.muted,fontSize:12}}>{movsVista.length} de {movimientos.length} movimientos</span>
+            </div>
+            {loadingMov?<Loader text="Cargando movimientos..."/>:
+              movimientos.length===0
+                ?<div style={{padding:40,textAlign:"center"}}>
+                  <div style={{fontSize:32,marginBottom:8}}>📂</div>
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:4}}>Sin movimientos</div>
+                  <div style={{color:C.muted,fontSize:12,marginBottom:16}}>Importa el estado de cuenta del banco (CSV o Excel)</div>
+                  <button onClick={()=>{setModalImport(true);setStep(1);}} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 20px",fontWeight:700,fontSize:13,cursor:"pointer"}}>📂 Importar</button>
+                </div>
+                :<div style={{overflowX:"auto",maxHeight:500,overflowY:"auto"}}>
+                  <table>
+                    <thead><tr>
+                      {["Fecha","Concepto","Monto","Estado","Socio",""].map(h=>(
+                        <th key={h} style={{padding:"10px 14px",textAlign:"left",color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",borderBottom:`1px solid ${C.border}`,position:"sticky",top:0,background:"#111827",whiteSpace:"nowrap"}}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {movsVista.map((m,i)=>{
+                        const est=clasificar(m);
+                        const eInfo=estadoLabel[est]||estadoLabel.pendiente;
+                        const patron=patrones.find(p=>m.descripcion?.toLowerCase().includes(p.patron_texto?.toLowerCase()));
+                        const socioAsoc=patron?socios.find(s=>s.id===patron.socio_id):null;
+                        return(
+                          <tr key={m.id} style={{borderBottom:`1px solid ${C.border}`,background:eInfo.bg}}>
+                            <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}</td>
+                            <td style={{padding:"11px 14px",color:C.white,fontSize:12,maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}</td>
+                            <td style={{padding:"11px 14px",fontSize:13,fontFamily:"'DM Mono',monospace",fontWeight:700,color:m.monto>0?C.green:C.red,whiteSpace:"nowrap"}}>{m.monto>0?"+":""}{fmt(Math.abs(m.monto))}</td>
+                            <td style={{padding:"11px 14px",whiteSpace:"nowrap"}}><Badge color={eInfo.badge}>{eInfo.txt}</Badge></td>
+                            <td style={{padding:"11px 14px",color:C.muted,fontSize:11,maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                              {m.conciliado&&m.socio_id?socios.find(s=>s.id===m.socio_id)?.nombre||"—":socioAsoc?<span style={{color:C.yellow}}>¿{socioAsoc.nombre}?</span>:"—"}
+                            </td>
+                            <td style={{padding:"11px 14px",whiteSpace:"nowrap"}}>
+                              {m.conciliado
+                                ?<button onClick={()=>desmarcar(m)} style={{background:"transparent",border:`1px solid ${C.muted}`,color:C.muted,borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Desmarcar</button>
+                                :est==="auto"||est==="auto_aprendido"
+                                  ?<button onClick={async()=>{
+                                      if(est==="auto"){await aplicarConciliacion(m,null,"rendimiento_bancario","",false);}
+                                      else{const p=patrones.find(pt=>m.descripcion?.toLowerCase().includes(pt.patron_texto?.toLowerCase()));await aplicarConciliacion(m,p.socio_id,p.tipo_transaccion,p.comentario||"",false);}
+                                      await cargarMovimientos(sel.id);
+                                    }} style={{background:`${C.green}22`,border:`1px solid ${C.green}`,color:C.green,borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                                    ✓ Auto
+                                  </button>
+                                  :<button onClick={()=>abrirConciliar(m)} style={{background:est==="sugerido"?`${C.yellow}22`:`${C.gold}22`,border:`1px solid ${est==="sugerido"?C.yellow:C.gold}`,color:est==="sugerido"?C.yellow:C.gold,borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",fontWeight:700}}>
+                                    {est==="sugerido"?"✓ Confirmar":"Conciliar →"}
+                                  </button>
+                              }
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+            }
+          </div>
+        </>
+      )}
+
+      {/* ═══ MODAL IMPORTAR ═══════════════════════════════════ */}
+      {modalImport&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:28,width:"100%",maxWidth:520,maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{display:"flex",gap:0,marginBottom:24,justifyContent:"center"}}>
+              {[["1","Subir"],["2","Mapear"],["3","Confirmar"]].map(([n,lbl],idx)=>(
+                <div key={n} style={{display:"flex",alignItems:"center"}}>
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+                    <div style={{width:28,height:28,borderRadius:99,background:step>idx?C.gold:step===idx+1?C.gold:"transparent",border:`2px solid ${step>=idx+1?C.gold:C.border}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:800,color:step>=idx+1?"#000":C.muted}}>{step>idx+1?"✓":n}</div>
+                    <div style={{fontSize:10,color:step===idx+1?C.gold:C.muted,marginTop:4,fontWeight:600}}>{lbl}</div>
+                  </div>
+                  {idx<2&&<div style={{width:40,height:2,background:step>idx+1?C.gold:C.border,margin:"0 8px",marginBottom:14}}/>}
+                </div>
+              ))}
+            </div>
+
+            {step===1&&(
+              <div>
+                <h3 style={{color:C.white,fontSize:16,fontWeight:700,marginBottom:6}}>Importar Estado de Cuenta</h3>
+                <p style={{color:C.muted,fontSize:13,marginBottom:16}}>Cuenta: <strong style={{color:C.gold}}>{sel?.banco}</strong></p>
+                <div style={{background:C.bg,border:`2px dashed ${C.border}`,borderRadius:12,padding:30,textAlign:"center",marginBottom:14}}>
+                  <div style={{fontSize:36,marginBottom:10}}>📄</div>
+                  <div style={{color:C.white,fontSize:14,fontWeight:600,marginBottom:6}}>Selecciona el archivo</div>
+                  <div style={{color:C.muted,fontSize:12,marginBottom:16}}>Excel (.xlsx) de Pichincha o CSV</div>
+                  <input type="file" accept=".csv,.xlsx,.xls" id="fi" style={{display:"none"}} onChange={e=>{if(e.target.files[0])leerArchivo(e.target.files[0]);}}/>
+                  <label htmlFor="fi" style={{background:C.gold,color:"#000",borderRadius:8,padding:"10px 24px",fontWeight:700,fontSize:13,cursor:"pointer",display:"inline-block"}}>📂 Elegir archivo</label>
+                </div>
+                <div style={{background:"#0a1628",border:"1px solid #1e3a5f",borderRadius:10,padding:12,marginBottom:14}}>
+                  <div style={{color:"#60a5fa",fontSize:11,fontWeight:700,marginBottom:6}}>💡 Detección automática Pichincha:</div>
+                  <div style={{color:C.muted,fontSize:11,lineHeight:1.9}}>
+                    🟢 <strong style={{color:C.white}}>Intereses bancarios</strong> → auto-conciliados<br/>
+                    🟡 <strong style={{color:C.white}}>Patrones aprendidos</strong> → sugeridos para confirmar<br/>
+                    🟠 <strong style={{color:C.white}}>Resto</strong> → asignación manual
+                  </div>
+                </div>
+                {importMsg&&<div style={{color:C.red,fontSize:13,marginBottom:10}}>{importMsg}</div>}
+                <button onClick={()=>{setModalImport(false);setStep(1);}} style={{width:"100%",background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>Cancelar</button>
+              </div>
+            )}
+
+            {step===2&&(
+              <div>
+                <h3 style={{color:C.white,fontSize:16,fontWeight:700,marginBottom:4}}>Mapear Columnas</h3>
+                <p style={{color:C.muted,fontSize:13,marginBottom:16}}><strong style={{color:C.gold}}>{rawRows.length} movimientos</strong> · <strong style={{color:C.gold}}>{headers.length} columnas</strong></p>
+                <div style={{display:"grid",gap:12,marginBottom:14}}>
+                  {[["📅 Fecha *","fecha"],["📝 Descripción","descripcion"],["💲 Monto *","monto"]].map(([lbl,key])=>(
+                    <div key={key}>
+                      <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:4}}>{lbl}</label>
+                      <select value={mapCols[key]} onChange={e=>setMapCols(p=>({...p,[key]:e.target.value}))} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
+                        <option value="">— Seleccionar columna —</option>
+                        {headers.map(h=><option key={h} value={h}>{h}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+                {importMsg&&<div style={{color:C.yellow,fontSize:13,marginBottom:10}}>{importMsg}</div>}
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setStep(1)} style={{flex:1,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>← Atrás</button>
+                  <button onClick={()=>{if(!mapCols.fecha||!mapCols.monto){setImportMsg("⚠️ Selecciona Fecha y Monto.");return;}setStep(3);setImportMsg("");}} style={{flex:2,background:C.gold,color:"#000",border:"none",borderRadius:8,padding:10,cursor:"pointer",fontWeight:700}}>Vista previa →</button>
+                </div>
+              </div>
+            )}
+
+            {step===3&&(
+              <div>
+                <h3 style={{color:C.white,fontSize:16,fontWeight:700,marginBottom:4}}>Confirmar Importación</h3>
+                <p style={{color:C.muted,fontSize:13,marginBottom:14}}><strong style={{color:C.gold}}>{rawRows.length} movimientos</strong> a cargar en <strong style={{color:C.gold}}>{sel?.banco}</strong></p>
+                <div style={{background:C.bg,borderRadius:10,overflow:"hidden",marginBottom:14,border:`1px solid ${C.border}`,maxHeight:160,overflowY:"auto"}}>
+                  <table style={{fontSize:11}}>
+                    <thead><tr style={{background:"#0d1a2e"}}>
+                      {["Fecha","Descripción","Monto"].map(h=><th key={h} style={{padding:"7px 10px",textAlign:"left",color:C.muted,fontSize:9,fontWeight:700,textTransform:"uppercase"}}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {rawRows.slice(0,6).map((r,i)=>{
+                        const m=parseFloat((r[mapCols.monto]||"0").replace(/[$,\s]/g,""))||0;
+                        return(
+                          <tr key={i} style={{borderTop:`1px solid ${C.border}`}}>
+                            <td style={{padding:"6px 10px",color:C.muted,whiteSpace:"nowrap"}}>{r[mapCols.fecha]}</td>
+                            <td style={{padding:"6px 10px",color:C.white,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r[mapCols.descripcion]||"—"}</td>
+                            <td style={{padding:"6px 10px",color:m>0?C.green:C.red,fontFamily:"'DM Mono',monospace",fontWeight:700}}>{m>0?"+":""}{fmt(Math.abs(m))}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {rawRows.length>6&&<div style={{padding:"6px 10px",color:C.muted,fontSize:11,borderTop:`1px solid ${C.border}`,textAlign:"center"}}>...y {rawRows.length-6} más</div>}
+                </div>
+                <div style={{marginBottom:14}}>
+                  <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:4}}>Saldo según banco ($) — opcional</label>
+                  <input type="number" placeholder={`Actual: ${sel?.saldo_banco||0}`} value={nuevoSaldo} onChange={e=>setNuevoSaldo(e.target.value)}
+                    style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}/>
+                </div>
+                {importMsg&&<div style={{color:C.red,fontSize:13,marginBottom:10}}>{importMsg}</div>}
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setStep(step===3&&headers.length?2:1)} style={{flex:1,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>← Atrás</button>
+                  <button onClick={confirmarImport} disabled={importando} style={{flex:2,background:importando?"#1e2d45":C.green,color:importando?C.muted:"#fff",border:"none",borderRadius:8,padding:10,cursor:importando?"not-allowed":"pointer",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                    {importando?<><span className="spin">⟳</span> Importando...</>:`✓ Importar ${rawRows.length} movimientos`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ═══ MODAL CONCILIAR MANUAL ═══════════════════════════ */}
+      {modalConc&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",zIndex:300,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:28,width:"100%",maxWidth:480,maxHeight:"90vh",overflowY:"auto"}}>
+            {/* Header del movimiento */}
+            <div style={{background:C.bg,borderRadius:10,padding:14,marginBottom:20,border:`1px solid ${C.border}`}}>
+              <div style={{color:C.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",marginBottom:4}}>Movimiento a conciliar</div>
+              <div style={{color:C.white,fontSize:14,fontWeight:700}}>{modalConc.descripcion}</div>
+              <div style={{display:"flex",gap:12,marginTop:6}}>
+                <span style={{color:C.muted,fontSize:12}}>{fmtDate(modalConc.fecha)}</span>
+                <span style={{color:modalConc.monto>0?C.green:C.red,fontSize:14,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{modalConc.monto>0?"+":""}{fmt(Math.abs(modalConc.monto))}</span>
+              </div>
+              {socioSugerido&&(
+                <div style={{marginTop:8,background:"#2d1f00",borderRadius:6,padding:"6px 10px",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:14}}>🟡</span>
+                  <span style={{color:C.yellow,fontSize:12,fontWeight:600}}>Patrón conocido: {socios.find(s=>s.id===socioSugerido.socio_id)?.nombre} · {socioSugerido.tipo_transaccion} ({socioSugerido.veces_confirmado}x)</span>
+                </div>
+              )}
+            </div>
+
+            {/* PASO 1: Buscar socio */}
+            {concStep===1&&(
+              <div>
+                <div style={{color:C.gold,fontSize:13,fontWeight:700,marginBottom:12}}>Paso 1 — ¿A qué socio pertenece este pago?</div>
+                <input type="text" placeholder="🔍 Buscar por nombre o cédula..." value={concSocioQ} onChange={e=>setConcSocioQ(e.target.value)}
+                  style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,marginBottom:10,boxSizing:"border-box"}}/>
+                <div style={{maxHeight:220,overflowY:"auto",display:"grid",gap:4}}>
+                  {socios.filter(s=>!concSocioQ||(s.nombre.toLowerCase().includes(concSocioQ.toLowerCase())||s.cedula.includes(concSocioQ))).slice(0,12).map(s=>(
+                    <button key={s.id} onClick={()=>{setConcSocioId(s.id.toString());setConcStep(2);}} style={{background:concSocioId===s.id.toString()?`${C.gold}22`:C.bg,border:`1px solid ${concSocioId===s.id.toString()?C.gold:C.border}`,borderRadius:8,padding:"10px 14px",cursor:"pointer",textAlign:"left",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <div style={{color:C.white,fontSize:13,fontWeight:600}}>{s.nombre}</div>
+                        <div style={{color:C.muted,fontSize:11}}>{s.cedula}</div>
+                      </div>
+                      <div style={{textAlign:"right"}}>
+                        {s.saldo_credito>0&&<div style={{color:C.blue,fontSize:11,fontWeight:700}}>Crédito: {fmt(s.saldo_credito)}</div>}
+                        <div style={{color:C.green,fontSize:11}}>Ahorro: {fmt(s.saldo_ahorro)}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <div style={{display:"flex",gap:10,marginTop:16}}>
+                  <button onClick={()=>setModalConc(null)} style={{flex:1,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>Cancelar</button>
+                  <button onClick={()=>{setConcSocioId("");setConcStep(2);}} style={{flex:1,background:`${C.purple}22`,color:"#c4b5fd",border:`1px solid ${C.purple}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>Sin socio → Otros</button>
+                </div>
+              </div>
+            )}
+
+            {/* PASO 2: Tipo de transacción */}
+            {concStep===2&&(
+              <div>
+                <div style={{color:C.gold,fontSize:13,fontWeight:700,marginBottom:4}}>Paso 2 — ¿A qué corresponde este pago?</div>
+                {socioConcSel&&<div style={{color:C.muted,fontSize:12,marginBottom:14}}>Socio: <strong style={{color:C.white}}>{socioConcSel.nombre}</strong></div>}
+                <div style={{display:"grid",gap:10,marginBottom:16}}>
+                  {[
+                    ["ahorro","💰","Aporte a Ahorros",`Saldo actual: ${socioConcSel?fmt(socioConcSel.saldo_ahorro):"—"}`,C.green],
+                    ...(socioConcSel?.saldo_credito>0?[["pago_cuota","💳","Pago de Cuota Crédito",`Saldo crédito: ${fmt(socioConcSel.saldo_credito)}`,C.blue]]:[]),
+                    ["otro","📝","Otros / Comentario","Registrar con nota manual",C.purple],
+                  ].map(([v,ico,lbl,sub,col])=>(
+                    <button key={v} onClick={()=>setConcTipo(v)} style={{background:concTipo===v?`${col}22`:C.bg,border:`2px solid ${concTipo===v?col:C.border}`,borderRadius:10,padding:"12px 16px",cursor:"pointer",textAlign:"left",display:"flex",gap:12,alignItems:"center"}}>
+                      <span style={{fontSize:24}}>{ico}</span>
+                      <div>
+                        <div style={{color:concTipo===v?col:C.white,fontSize:13,fontWeight:700}}>{lbl}</div>
+                        <div style={{color:C.muted,fontSize:11,marginTop:2}}>{sub}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {concTipo==="otro"&&(
+                  <div style={{marginBottom:14}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",display:"block",marginBottom:4}}>Comentario obligatorio</label>
+                    <input type="text" placeholder="Ej: Pago interés inversión Aldo Yanez" value={concComentario} onChange={e=>setConcComentario(e.target.value)}
+                      style={{width:"100%",background:C.bg,border:`1px solid ${C.purple}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,boxSizing:"border-box"}}/>
+                  </div>
+                )}
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>{setConcStep(1);setConcTipo("");}} style={{flex:1,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>← Atrás</button>
+                  <button onClick={()=>{if(!concTipo)return;if(concTipo==="otro"&&!concComentario)return;setConcStep(3);}} disabled={!concTipo||(concTipo==="otro"&&!concComentario)}
+                    style={{flex:2,background:!concTipo?C.card:C.gold,color:!concTipo?C.muted:"#000",border:"none",borderRadius:8,padding:10,cursor:!concTipo?"not-allowed":"pointer",fontWeight:700}}>
+                    Revisar →
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* PASO 3: Confirmar */}
+            {concStep===3&&(
+              <div>
+                <div style={{color:C.gold,fontSize:13,fontWeight:700,marginBottom:14}}>Paso 3 — Confirmar conciliación</div>
+                <div style={{background:C.bg,borderRadius:10,padding:16,marginBottom:16,border:`1px solid ${C.green}40`}}>
+                  {[
+                    ["Movimiento",modalConc.descripcion],
+                    ["Monto",(modalConc.monto>0?"+":"")+fmt(Math.abs(modalConc.monto))],
+                    ["Fecha",fmtDate(modalConc.fecha)],
+                    ["Socio",socioConcSel?.nombre||"Sin socio asignado"],
+                    ["Tipo",concTipo==="ahorro"?"💰 Aporte a Ahorros":concTipo==="pago_cuota"?"💳 Pago Cuota Crédito":"📝 Otros"],
+                    ...(concComentario?[["Comentario",concComentario]]:[]),
+                  ].map(([k,v])=>(
+                    <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <span style={{color:C.muted,fontSize:12}}>{k}</span>
+                      <span style={{color:C.white,fontSize:12,fontWeight:600,textAlign:"right",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis"}}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{background:"#0a1628",borderRadius:8,padding:10,marginBottom:14,border:"1px solid #1e3a5f"}}>
+                  <div style={{color:"#60a5fa",fontSize:11,fontWeight:700,marginBottom:4}}>Efectos al confirmar:</div>
+                  <div style={{color:C.muted,fontSize:11,lineHeight:1.8}}>
+                    {concTipo==="ahorro"?`✓ Saldo ahorro ${socioConcSel?.nombre} + ${fmt(Math.abs(modalConc.monto))}`:""}
+                    {concTipo==="pago_cuota"?`✓ Saldo crédito ${socioConcSel?.nombre} - ${fmt(Math.abs(modalConc.monto))}`:""}
+                    <br/>✓ Transacción registrada en Supabase
+                    <br/>✓ Patrón guardado para aprendizaje futuro
+                    <br/>✓ Movimiento marcado como CONCILIADO
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setConcStep(2)} style={{flex:1,background:"transparent",color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:10,cursor:"pointer",fontWeight:600}}>← Atrás</button>
+                  <button onClick={confirmarConciliacionManual} disabled={concProcesando}
+                    style={{flex:2,background:concProcesando?"#1e2d45":C.green,color:concProcesando?C.muted:"#fff",border:"none",borderRadius:8,padding:10,cursor:concProcesando?"not-allowed":"pointer",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                    {concProcesando?<><span className="spin">⟳</span> Aplicando...</>:"✓ Confirmar y Conciliar"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
   const [buscar,setBuscar]=useState("");
   const [cuentas,setCuentas]=useState([]);
   const [movimientos,setMovimientos]=useState([]);
@@ -1442,7 +2334,8 @@ function Estados({db}){
 
   const buildMsg=(s)=>{
     const m=diasMora(s.fecha_vence);
-    const iM=m>0?(s.saldo_credito*MORA_DIARIA*m).toFixed(2):"0.00";
+    const recMora=calcularRecargosLegales(s.cuota_mensual,s.fecha_vence);
+    const iM=recMora.totalRecargo.toFixed(2);
     const iA=(s.saldo_ahorro*0.005).toFixed(2);
     return `🏦 *CAJA DE AHORRO CADENA*
 ━━━━━━━━━━━━━━━━━━━━
@@ -1507,7 +2400,8 @@ _Gracias por confiar en CADENA_ 🤝`;
 
         {sel&&(()=>{
           const m=diasMora(sel.fecha_vence);
-          const iM=m>0?(sel.saldo_credito*MORA_DIARIA*m).toFixed(2):"0.00";
+          const rec=calcularRecargosLegales(sel.cuota_mensual,sel.fecha_vence);
+          const iM=rec.totalRecargo.toFixed(2);
           const iA=(sel.saldo_ahorro*0.005).toFixed(2);
           const msg=buildMsg(sel);
           const linkWsp=`https://wa.me/593${(sel.telefono||"").replace(/^0/,"")}?text=${encodeURIComponent(msg)}`;
