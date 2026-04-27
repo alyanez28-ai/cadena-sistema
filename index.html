@@ -733,7 +733,7 @@ function Transacciones({db,sesion}){
   const [tipo,setTipo]=useState("deposito");
   const [buscarSocio,setBuscarSocio]=useState("");
   const [verTabla,setVerTabla]=useState(false);
-  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12"});
+  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13"});
 
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -749,16 +749,18 @@ function Transacciones({db,sesion}){
   const socioSel=socios.find(s=>s.id===form.socioId);
   const plazo=+form.plazo||12;
   const montoVal=+form.monto||0;
+  const tasaAnual=+form.tasa||0.13;
+  const calcCuotaLocal=(cap,meses)=>{const i=tasaAnual/12;if(i===0)return cap/meses;return cap*(i*Math.pow(1+i,meses))/(Math.pow(1+i,meses)-1);};
   const reserva=tipo==="desembolso"?+(montoVal*RESERVA_PCT).toFixed(2):0;
   const montoNeto=tipo==="desembolso"?+(montoVal-reserva).toFixed(2):montoVal;
-  const cuotaCalc=tipo==="desembolso"&&montoNeto>0?+calcCuota(montoNeto,plazo).toFixed(2):0;
+  const cuotaCalc=tipo==="desembolso"&&montoNeto>0?+calcCuotaLocal(montoNeto,plazo).toFixed(2):0;
 
   const calcTabla=(cap,meses)=>{
-    const i=TASA_ANUAL/12; let s=cap; const t=[];
+    const i=tasaAnual/12; let s=cap; const t=[];
     for(let n=1;n<=meses;n++){
-      const int=+(s*i).toFixed(2); const cap2=+(+calcCuota(cap,meses).toFixed(2)-int).toFixed(2);
+      const int=+(s*i).toFixed(2); const cap2=+(+calcCuotaLocal(cap,meses).toFixed(2)-int).toFixed(2);
       s=Math.max(0,+(s-cap2).toFixed(2));
-      t.push({n,cuota:+calcCuota(cap,meses).toFixed(2),capital:cap2,interes:int,saldo:s});
+      t.push({n,cuota:+calcCuotaLocal(cap,meses).toFixed(2),capital:cap2,interes:int,saldo:s});
     }
     return t;
   };
@@ -806,7 +808,7 @@ function Transacciones({db,sesion}){
           monto_aprobado:montoVal,
           monto_entregado:montoNeto,
           reserva_legal:reserva,
-          tasa_anual:TASA_ANUAL*100,
+          tasa_anual:tasaAnual*100,
           plazo_meses:plazo,
           cuota_mensual:cuotaCalc,
           fecha_desembolso:form.fecha,
@@ -837,7 +839,7 @@ function Transacciones({db,sesion}){
       const entrada={id:Date.now(),tipo,icono:tipoActual.icon,label:tipoActual.label,nombre:socioSel.nombre,cedula:socioSel.cedula,monto:montoVal,voucher:form.voucher,color:tipoActual.color};
       setHistorial(p=>[entrada,...p]);
       setConfirmacion({socio:socioSel,socioUpd,monto:montoVal,tipo,label:tipoActual.label,color:tipoActual.color,reserva,cuota:cuotaCalc,msgWsp:msg,linkWsp:`https://wa.me/593${socioSel.telefono?.replace(/^0/,"")}?text=${encodeURIComponent(msg)}`});
-      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12"});
+      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13"});
       setVerTabla(false);
     }catch(e){setError("Error: "+e.message);}
     setProcesando(false);
@@ -920,9 +922,17 @@ function Transacciones({db,sesion}){
                   <select value={form.plazo} onChange={e=>f("plazo",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
                     {[3,6,9,12,18,24,36].map(p=><option key={p} value={p}>{p} meses</option>)}
                   </select>
+                  <div style={{marginTop:10}}>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📈 Tasa Flat Anual *</label>
+                    <select value={form.tasa} onChange={e=>f("tasa",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
+                      <option value="0.10">10% flat/año — Extraordinario (TEA ~19.54%)</option>
+                      <option value="0.13">13% flat/año — Ordinario (TEA ~26.18%)</option>
+                      <option value="0.00">0% — Sin interés (Acuerdo de pago)</option>
+                    </select>
+                  </div>
                   {montoVal>0&&(
                     <div style={{marginTop:10,background:"#1a0a2e",border:"1px solid #4c1d95",borderRadius:10,padding:12}}>
-                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Sistema Francés · 13% anual</div>
+                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Sistema Francés · {(tasaAnual*100).toFixed(0)}% anual flat</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Bruto</div><div style={{color:C.white,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoVal)}</div></div>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Reserva 3%</div><div style={{color:C.red,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>-{fmt(reserva)}</div></div>
