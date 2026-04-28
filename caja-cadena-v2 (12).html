@@ -750,17 +750,34 @@ function Transacciones({db,sesion}){
   const plazo=+form.plazo||12;
   const montoVal=+form.monto||0;
   const tasaAnual=+form.tasa||0.13;
-  const calcCuotaLocal=(cap,meses)=>{const i=tasaAnual/12;if(i===0)return cap/meses;return cap*(i*Math.pow(1+i,meses))/(Math.pow(1+i,meses)-1);};
+  const calcCuotaLocal=(cap,meses)=>{if(meses===0)return 0;if(tasaAnual===0)return cap/meses;const intTotal=cap*tasaAnual*(meses/12);return (cap+intTotal)/meses;};
   const reserva=tipo==="desembolso"?+(montoVal*RESERVA_PCT).toFixed(2):0;
   const montoNeto=tipo==="desembolso"?+(montoVal-reserva).toFixed(2):montoVal;
-  const cuotaCalc=tipo==="desembolso"&&montoNeto>0?+calcCuotaLocal(montoNeto,plazo).toFixed(2):0;
+  const cuotaCalc=tipo==="desembolso"&&montoVal>0?+calcCuotaLocal(montoVal,plazo).toFixed(2):0;
 
   const calcTabla=(cap,meses)=>{
-    const i=tasaAnual/12; let s=cap; const t=[];
+    const cuota=+calcCuotaLocal(cap,meses).toFixed(2);
+    if(tasaAnual===0){
+      const capMes=+(cap/meses).toFixed(2);
+      let s=cap; const t=[];
+      for(let n=1;n<=meses;n++){s=+(Math.max(0,s-capMes)).toFixed(2);t.push({n,cuota,capital:capMes,interes:0,saldo:s});}
+      return t;
+    }
+    // Find implicit monthly rate via Newton (cuota fija flat, distribucion francesa)
+    let r=tasaAnual/12;
+    for(let k=0;k<200;k++){
+      const pv=cuota*(1-Math.pow(1+r,-meses))/r;
+      const dpv=cuota*((-meses*Math.pow(1+r,-meses-1)*r-(1-Math.pow(1+r,-meses)))/(r*r));
+      const nr=r-(pv-cap)/dpv;
+      if(Math.abs(nr-r)<1e-10)break;
+      r=Math.max(0.0001,nr);
+    }
+    let s=cap; const t=[];
     for(let n=1;n<=meses;n++){
-      const int=+(s*i).toFixed(2); const cap2=+(+calcCuotaLocal(cap,meses).toFixed(2)-int).toFixed(2);
-      s=Math.max(0,+(s-cap2).toFixed(2));
-      t.push({n,cuota:+calcCuotaLocal(cap,meses).toFixed(2),capital:cap2,interes:int,saldo:s});
+      const int=+(s*r).toFixed(2);
+      const cap2=+(cuota-int).toFixed(2);
+      s=+(Math.max(0,s-cap2)).toFixed(2);
+      t.push({n,cuota,capital:cap2,interes:int,saldo:s});
     }
     return t;
   };
@@ -923,16 +940,32 @@ function Transacciones({db,sesion}){
                     {[3,6,9,12,18,24,36].map(p=><option key={p} value={p}>{p} meses</option>)}
                   </select>
                   <div style={{marginTop:10}}>
-                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📈 Tasa Flat Anual *</label>
-                    <select value={form.tasa} onChange={e=>f("tasa",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
-                      <option value="0.10">10% flat/año — Extraordinario (TEA ~19.54%)</option>
-                      <option value="0.13">13% flat/año — Ordinario (TEA ~26.18%)</option>
-                      <option value="0.00">0% — Sin interés (Acuerdo de pago)</option>
-                    </select>
+                    <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📈 Tasa Flat Anual (%)</label>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <input type="number" min="0" max="100" step="0.5"
+                        value={(tasaAnual*100).toFixed(1)}
+                        onChange={e=>f("tasa",String(Math.max(0,+e.target.value||0)/100))}
+                        placeholder="Ej: 10, 13, 0"
+                        style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.gold,fontSize:18,fontFamily:"'DM Mono',monospace",fontWeight:800,textAlign:"center"}}/>
+                      <span style={{color:C.muted,fontSize:14,fontWeight:700}}>%</span>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginTop:6}}>
+                      {[[10,"Extraord."],[13,"Ordinario"],[0,"Sin int."]].map(([t,lbl])=>(
+                        <button key={t} onClick={()=>f("tasa",String(t/100))}
+                          style={{flex:1,background:Math.abs(tasaAnual*100-t)<0.01?C.gold:C.card,color:Math.abs(tasaAnual*100-t)<0.01?"#000":C.muted,border:`1px solid ${Math.abs(tasaAnual*100-t)<0.01?C.gold:C.border}`,borderRadius:6,padding:"5px 4px",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                          {t}% {lbl}
+                        </button>
+                      ))}
+                    </div>
+                    {tasaAnual>0&&(
+                      <div style={{color:C.muted,fontSize:10,marginTop:5,textAlign:"center"}}>
+                        Cuota fija = capital + interés plano · Int. mensual: {fmt(montoNeto*tasaAnual/12)}
+                      </div>
+                    )}
                   </div>
                   {montoVal>0&&(
                     <div style={{marginTop:10,background:"#1a0a2e",border:"1px solid #4c1d95",borderRadius:10,padding:12}}>
-                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Sistema Francés · {(tasaAnual*100).toFixed(0)}% anual flat</div>
+                      <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Tasa Flat {(tasaAnual*100).toFixed(1)}% anual</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Bruto</div><div style={{color:C.white,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoVal)}</div></div>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Reserva 3%</div><div style={{color:C.red,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>-{fmt(reserva)}</div></div>
@@ -947,14 +980,14 @@ function Transacciones({db,sesion}){
                       </button>
                     </div>
                   )}
-                  {verTabla&&montoNeto>0&&(
+                  {verTabla&&montoVal>0&&(
                     <div style={{marginTop:8,background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,overflow:"hidden",maxHeight:200,overflowY:"auto"}}>
                       <table style={{fontSize:11}}>
                         <thead><tr style={{background:"#0d1a2e",position:"sticky",top:0}}>
                           {["#","Cuota","Capital","Interés","Saldo"].map(h=><th key={h} style={{padding:"6px 10px",textAlign:"right",color:C.muted,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>{h}</th>)}
                         </tr></thead>
                         <tbody>
-                          {calcTabla(montoNeto,plazo).map((r,i)=>(
+                          {calcTabla(montoVal,plazo).map((r,i)=>(
                             <tr key={r.n} style={{borderTop:`1px solid ${C.border}`,background:i%2===0?"transparent":"#0f1a2d"}}>
                               <td style={{padding:"5px 10px",color:C.muted,textAlign:"right"}}>{r.n}</td>
                               <td style={{padding:"5px 10px",color:C.gold,fontFamily:"'DM Mono',monospace",textAlign:"right",fontWeight:700}}>{fmt(r.cuota)}</td>
