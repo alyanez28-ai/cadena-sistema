@@ -935,10 +935,21 @@ function Transacciones({db,sesion}){
               </div>
               {tipo==="desembolso"&&(
                 <div>
-                  <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📅 Plazo *</label>
-                  <select value={form.plazo} onChange={e=>f("plazo",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.white,fontSize:13,cursor:"pointer"}}>
-                    {[3,6,9,12,18,24,36].map(p=><option key={p} value={p}>{p} meses</option>)}
-                  </select>
+                  <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📅 Plazo (meses) *</label>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <input type="number" min="1" max="120" value={form.plazo}
+                      onChange={e=>f("plazo",String(Math.max(1,+e.target.value||1)))}
+                      style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:C.gold,fontSize:18,fontFamily:"'DM Mono',monospace",fontWeight:800,textAlign:"center"}}/>
+                    <span style={{color:C.muted,fontSize:13,fontWeight:600}}>meses</span>
+                  </div>
+                  <div style={{display:"flex",gap:6,marginTop:6}}>
+                    {[3,6,9,12,18,24,36].map(p=>(
+                      <button key={p} onClick={()=>f("plazo",String(p))}
+                        style={{flex:1,background:+form.plazo===p?C.gold:C.card,color:+form.plazo===p?"#000":C.muted,border:`1px solid ${+form.plazo===p?C.gold:C.border}`,borderRadius:6,padding:"5px 2px",fontSize:10,fontWeight:700,cursor:"pointer"}}>
+                        {p}m
+                      </button>
+                    ))}
+                  </div>
                   <div style={{marginTop:10}}>
                     <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>📈 Tasa Flat Anual (%)</label>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
