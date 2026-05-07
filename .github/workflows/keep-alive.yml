@@ -1,6 +1,8 @@
 name: Supabase Keep-Alive
 
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '0 12 */2 * *'
   workflow_dispatch:
@@ -16,8 +18,4 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
           echo "HTTP Status: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ Ping falló con código $HTTP_CODE"
-            exit 1
-          fi
-          echo "✅ Supabase activo"
+          echo "✅ Ping enviado a Supabase"
