@@ -13,9 +13,14 @@ jobs:
     steps:
       - name: Ping Supabase
         run: |
-          RESPONSE=$(curl -s -w "\n%{http_code}" "${{ secrets.SUPABASE_URL }}/rest/v1/socias?select=id&limit=1" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://rbdaahtmrhtfkjxzexan.supabase.co/rest/v1/socias?select=id&limit=1" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJiZGFhaHRtcmh0ZmtqeHpleGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjI5NjQsImV4cCI6MjA4OTQzODk2NH0.17RO690wgPS9TvnbwhDXfCnFKIrg1kCAfeBN5tqzagg" \
+            -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJiZGFhaHRtcmh0ZmtqeHpleGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjI5NjQsImV4cCI6MjA4OTQzODk2NH0.17RO690wgPS9TvnbwhDXfCnFKIrg1kCAfeBN5tqzagg")
           echo "HTTP Status: $HTTP_CODE"
-          echo "✅ Ping enviado a Supabase"
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "201" ]; then
+            echo "✅ Supabase activo"
+          else
+            echo "❌ Fallo con código $HTTP_CODE"
+            exit 1
+          fi
