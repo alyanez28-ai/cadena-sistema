@@ -1657,138 +1657,142 @@ function Inversiones({db}){
     });
   },[]);
 
-  const fmt=v=>v?`$${parseFloat(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",")}`:"-";
-  const fmtFecha=f=>f?new Date(f).toLocaleDateString("es-EC",{day:"2-digit",month:"2-digit",year:"numeric"}):"-";
-
+  const fmt=v=>(parseFloat(v)||0)===0?"-":`$${parseFloat(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",")}`;
+  const fmtF=f=>{if(!f)return"-";const d=new Date(f);return`${String(d.getUTCDate()).padStart(2,"0")}/${String(d.getUTCMonth()+1).padStart(2,"0")}/${d.getUTCFullYear()}`;};
   const filtrados=datos.filter(r=>r.nombre.toLowerCase().includes(filtro.toLowerCase()));
+  const tot=c=>filtrados.reduce((a,r)=>a+(parseFloat(r[c])||0),0);
 
-  // Totales
-  const tot=(campo)=>filtrados.reduce((a,r)=>a+(parseFloat(r[campo])||0),0);
+  if(cargando)return <div style={{padding:40,textAlign:"center",color:C.muted}}>⏳ Cargando inversiones...</div>;
+  if(error)return <div style={{padding:40,color:C.red}}>❌ {error}</div>;
 
-  if(cargando)return <div className="p-8 text-center">⏳ Cargando inversiones...</div>;
-  if(error)return <div className="p-8 text-red-500">❌ {error}</div>;
-
-  const thC="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-gray-100 whitespace-nowrap";
-  const thL="border border-gray-300 px-2 py-1 text-left text-xs font-bold bg-gray-100";
-  const td="border border-gray-300 px-2 py-1 text-right text-xs whitespace-nowrap";
-  const tdL="border border-gray-300 px-2 py-1 text-left text-xs";
-  const tdTot="border border-gray-300 px-2 py-1 text-right text-xs font-bold bg-yellow-50 whitespace-nowrap";
+  const TH=({children,bg,colSpan,rowSpan,left})=>(
+    <th colSpan={colSpan} rowSpan={rowSpan} style={{
+      background:bg||"#1e3a5f",color:"#fff",border:"1px solid #2d4a6e",
+      padding:"6px 10px",whiteSpace:"nowrap",textAlign:left?"left":"center",
+      fontSize:11,fontWeight:700,letterSpacing:"0.04em"
+    }}>{children}</th>
+  );
+  const TD=({children,bold,highlight,color})=>(
+    <td style={{
+      border:"1px solid #1e2d45",padding:"5px 10px",whiteSpace:"nowrap",
+      textAlign:"right",fontSize:12,fontFamily:"'DM Mono',monospace",
+      color:color||(bold?"#60a5fa":C.white),fontWeight:bold?"700":"400",
+      background:highlight?"rgba(96,165,250,0.08)":"transparent"
+    }}>{children}</td>
+  );
+  const TDN=({children})=>(
+    <td style={{
+      border:"1px solid #1e2d45",padding:"5px 10px",whiteSpace:"nowrap",
+      fontSize:11,color:C.muted,textAlign:"center"
+    }}>{children}</td>
+  );
+  const TDName=({children})=>(
+    <td style={{
+      border:"1px solid #1e2d45",padding:"5px 14px",whiteSpace:"nowrap",
+      fontSize:12,color:C.white,fontWeight:600,minWidth:220
+    }}>{children}</td>
+  );
+  const TDTot=({children,color})=>(
+    <td style={{
+      border:"1px solid #2d4a6e",padding:"6px 10px",whiteSpace:"nowrap",
+      textAlign:"right",fontSize:12,fontFamily:"'DM Mono',monospace",
+      color:color||C.gold,fontWeight:700,background:"rgba(251,191,36,0.08)"
+    }}>{children}</td>
+  );
 
   return(
-    <div className="p-4">
-      <div className="flex justify-between items-center mb-4">
+    <div style={{padding:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:10}}>
         <div>
-          <h2 className="text-xl font-bold text-blue-800">📈 Inversiones Socios Fundadores</h2>
-          <p className="text-sm text-gray-500">{filtrados.length} inversores | Total 2026: {fmt(tot("total_final_2026"))}</p>
+          <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>📈 Inversiones Socios Fundadores</h2>
+          <p style={{color:C.muted,fontSize:13}}>{filtrados.length} inversores &nbsp;|&nbsp; Total acumulado 2026: <span style={{color:C.gold,fontWeight:700}}>{fmt(tot("total_final_2026"))}</span></p>
         </div>
-        <div className="flex gap-2">
+        <div style={{display:"flex",gap:10}}>
           <input value={filtro} onChange={e=>setFiltro(e.target.value)}
-            className="border rounded px-3 py-1 text-sm" placeholder="🔍 Buscar inversor..."/>
+            style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 14px",color:C.white,fontSize:13,width:200}}
+            placeholder="🔍 Buscar inversor..."/>
           <button onClick={()=>window.print()}
-            className="bg-green-600 text-white px-4 py-1 rounded text-sm hover:bg-green-700">
+            style={{background:"#16a34a",color:"#fff",border:"none",borderRadius:8,padding:"8px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>
             🖨️ Imprimir
           </button>
         </div>
       </div>
 
-      <div className="overflow-x-auto text-xs" id="tabla-inversiones">
-        <div className="text-center mb-2 print:block">
-          <div className="font-bold text-base">FINANCIERA CADENA — CAJA DE AHORRO Y CRÉDITO</div>
-          <div className="text-sm">INFORME INVERSIONES SOCIOS FUNDADORES — PERÍODO 2024 AL 2026</div>
+      <div style={{overflowX:"auto"}}>
+        <div style={{textAlign:"center",marginBottom:10}}>
+          <div style={{color:C.white,fontWeight:800,fontSize:15}}>FINANCIERA CADENA — CAJA DE AHORRO Y CRÉDITO</div>
+          <div style={{color:C.muted,fontSize:13}}>INFORME INVERSIONES SOCIOS FUNDADORES — PERÍODO 2024 AL 2026</div>
         </div>
-        <table className="border-collapse w-full text-xs" style={{minWidth:"1800px"}}>
+        <table style={{borderCollapse:"collapse",fontSize:12}}>
           <thead>
             <tr>
-              <th className={thL} rowSpan={2} style={{minWidth:"180px"}}>APELLIDOS Y NOMBRES</th>
-              {/* 2024 */}
-              <th colSpan={5} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-blue-100">PERÍODO 2024</th>
-              {/* 2025 */}
-              <th colSpan={9} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-green-100">PERÍODO 2025</th>
-              {/* 2026 */}
-              <th colSpan={9} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-orange-100">PERÍODO 2026</th>
+              <TH left rowSpan={2}>APELLIDOS Y NOMBRES</TH>
+              <TH colSpan={5} bg="#1e3a8a">— PERÍODO 2024 —</TH>
+              <TH colSpan={9} bg="#14532d">— PERÍODO 2025 —</TH>
+              <TH colSpan={9} bg="#7c2d12">— PERÍODO 2026 —</TH>
             </tr>
             <tr>
-              <th className={`${thC} bg-blue-50`}>INVERSIÓN</th>
-              <th className={`${thC} bg-blue-50`}>GANANCIA</th>
-              <th className={`${thC} bg-blue-50`}>TOTAL</th>
-              <th className={`${thC} bg-blue-50`}>RETIRO</th>
-              <th className={`${thC} bg-blue-50`}>TOTAL FINAL</th>
-              <th className={`${thC} bg-green-50`}>FECHA INV.</th>
-              <th className={`${thC} bg-green-50`}>APORTE</th>
-              <th className={`${thC} bg-green-50`}>FECHA RET.</th>
-              <th className={`${thC} bg-green-50`}>RETIRO</th>
-              <th className={`${thC} bg-green-50`}>CAPITAL</th>
-              <th className={`${thC} bg-green-50`}>GANANCIA</th>
-              <th className={`${thC} bg-green-50`}>TOTAL</th>
-              <th className={`${thC} bg-green-50`}>RET. FINAL</th>
-              <th className={`${thC} bg-green-50`}>TOTAL INV.</th>
-              <th className={`${thC} bg-orange-50`}>FECHA INV.</th>
-              <th className={`${thC} bg-orange-50`}>APORTE</th>
-              <th className={`${thC} bg-orange-50`}>FECHA RET.</th>
-              <th className={`${thC} bg-orange-50`}>RETIRO</th>
-              <th className={`${thC} bg-orange-50`}>CAPITAL</th>
-              <th className={`${thC} bg-orange-50`}>GANANCIA</th>
-              <th className={`${thC} bg-orange-50`}>TOTAL</th>
-              <th className={`${thC} bg-orange-50`}>RET. FINAL</th>
-              <th className={`${thC} bg-orange-50 font-bold`}>TOTAL FINAL</th>
+              {["INVERSIÓN","GANANCIA","TOTAL","RETIRO","TOTAL FINAL"].map(h=><TH key={h} bg="#1e40af">{h}</TH>)}
+              {["FECHA INV.","APORTE","FECHA RET.","RETIRO","CAPITAL","GANANCIA","TOTAL","RET. FINAL","TOTAL INV."].map(h=><TH key={h} bg="#166534">{h}</TH>)}
+              {["FECHA INV.","APORTE","FECHA RET.","RETIRO","CAPITAL","GANANCIA","TOTAL","RET. FINAL","TOTAL FINAL"].map(h=><TH key={h} bg="#9a3412">{h}</TH>)}
             </tr>
           </thead>
           <tbody>
             {filtrados.map((r,i)=>(
-              <tr key={r.id} className={i%2===0?"bg-white":"bg-gray-50"}>
-                <td className={tdL}>{r.nombre}</td>
-                <td className={td}>{fmt(r.inversion_2024)}</td>
-                <td className={td}>{fmt(r.ganancia_2024)}</td>
-                <td className={td}>{fmt(r.total_2024)}</td>
-                <td className={td}>{fmt(r.retiro_2024)}</td>
-                <td className={`${td} font-semibold`}>{fmt(r.total_final_2024)}</td>
-                <td className={td}>{fmtFecha(r.fecha_inversion_2025)}</td>
-                <td className={td}>{fmt(r.aporte_inversion_2025)}</td>
-                <td className={td}>{fmtFecha(r.fecha_retiro_2025)}</td>
-                <td className={td}>{fmt(r.retiro_2025)}</td>
-                <td className={td}>{fmt(r.capital_2025)}</td>
-                <td className={td}>{fmt(r.ganancia_2025)}</td>
-                <td className={td}>{fmt(r.total_2025)}</td>
-                <td className={td}>{fmt(r.retiro_final_2025)}</td>
-                <td className={`${td} font-semibold`}>{fmt(r.total_inversion_2025)}</td>
-                <td className={td}>{fmtFecha(r.fecha_inversion_2026)}</td>
-                <td className={td}>{fmt(r.aporte_inversion_2026)}</td>
-                <td className={td}>{fmtFecha(r.fecha_retiro_2026)}</td>
-                <td className={td}>{fmt(r.retiro_2026)}</td>
-                <td className={td}>{fmt(r.capital_2026)}</td>
-                <td className={td}>{fmt(r.ganancia_2026)}</td>
-                <td className={td}>{fmt(r.total_2026)}</td>
-                <td className={td}>{fmt(r.retiro_final_2026)}</td>
-                <td className={`${td} font-bold text-blue-800`}>{fmt(r.total_final_2026)}</td>
+              <tr key={r.id} style={{background:i%2===0?"transparent":"rgba(255,255,255,0.03)"}}>
+                <TDName>{r.nombre}</TDName>
+                <TD>{fmt(r.inversion_2024)}</TD>
+                <TD color="#4ade80">{fmt(r.ganancia_2024)}</TD>
+                <TD>{fmt(r.total_2024)}</TD>
+                <TD color="#f87171">{fmt(r.retiro_2024)}</TD>
+                <TD bold>{fmt(r.total_final_2024)}</TD>
+                <TDN>{fmtF(r.fecha_inversion_2025)}</TDN>
+                <TD>{fmt(r.aporte_inversion_2025)}</TD>
+                <TDN>{fmtF(r.fecha_retiro_2025)}</TDN>
+                <TD color="#f87171">{fmt(r.retiro_2025)}</TD>
+                <TD>{fmt(r.capital_2025)}</TD>
+                <TD color="#4ade80">{fmt(r.ganancia_2025)}</TD>
+                <TD>{fmt(r.total_2025)}</TD>
+                <TD color="#f87171">{fmt(r.retiro_final_2025)}</TD>
+                <TD bold>{fmt(r.total_inversion_2025)}</TD>
+                <TDN>{fmtF(r.fecha_inversion_2026)}</TDN>
+                <TD>{fmt(r.aporte_inversion_2026)}</TD>
+                <TDN>{fmtF(r.fecha_retiro_2026)}</TDN>
+                <TD color="#f87171">{fmt(r.retiro_2026)}</TD>
+                <TD>{fmt(r.capital_2026)}</TD>
+                <TD color="#4ade80">{fmt(r.ganancia_2026)}</TD>
+                <TD>{fmt(r.total_2026)}</TD>
+                <TD color="#f87171">{fmt(r.retiro_final_2026)}</TD>
+                <TD bold highlight color="#93c5fd">{fmt(r.total_final_2026)}</TD>
               </tr>
             ))}
           </tbody>
           <tfoot>
-            <tr className="bg-yellow-100">
-              <td className={`${tdL} font-bold`}>TOTALES</td>
-              <td className={tdTot}>{fmt(tot("inversion_2024"))}</td>
-              <td className={tdTot}>{fmt(tot("ganancia_2024"))}</td>
-              <td className={tdTot}>{fmt(tot("total_2024"))}</td>
-              <td className={tdTot}>{fmt(tot("retiro_2024"))}</td>
-              <td className={tdTot}>{fmt(tot("total_final_2024"))}</td>
-              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
-              <td className={tdTot}>{fmt(tot("aporte_inversion_2025"))}</td>
-              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
-              <td className={tdTot}>{fmt(tot("retiro_2025"))}</td>
-              <td className={tdTot}>{fmt(tot("capital_2025"))}</td>
-              <td className={tdTot}>{fmt(tot("ganancia_2025"))}</td>
-              <td className={tdTot}>{fmt(tot("total_2025"))}</td>
-              <td className={tdTot}>{fmt(tot("retiro_final_2025"))}</td>
-              <td className={tdTot}>{fmt(tot("total_inversion_2025"))}</td>
-              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
-              <td className={tdTot}>{fmt(tot("aporte_inversion_2026"))}</td>
-              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
-              <td className={tdTot}>{fmt(tot("retiro_2026"))}</td>
-              <td className={tdTot}>{fmt(tot("capital_2026"))}</td>
-              <td className={tdTot}>{fmt(tot("ganancia_2026"))}</td>
-              <td className={tdTot}>{fmt(tot("total_2026"))}</td>
-              <td className={tdTot}>{fmt(tot("retiro_final_2026"))}</td>
-              <td className={`${tdTot} text-blue-800 text-sm`}>{fmt(tot("total_final_2026"))}</td>
+            <tr>
+              <td style={{border:"1px solid #2d4a6e",padding:"7px 14px",color:C.gold,fontWeight:800,fontSize:13,whiteSpace:"nowrap",background:"rgba(251,191,36,0.06)"}}>TOTALES</td>
+              <TDTot>{fmt(tot("inversion_2024"))}</TDTot>
+              <TDTot color="#4ade80">{fmt(tot("ganancia_2024"))}</TDTot>
+              <TDTot>{fmt(tot("total_2024"))}</TDTot>
+              <TDTot color="#f87171">{fmt(tot("retiro_2024"))}</TDTot>
+              <TDTot>{fmt(tot("total_final_2024"))}</TDTot>
+              <td style={{border:"1px solid #2d4a6e",background:"rgba(251,191,36,0.06)"}}/>
+              <TDTot>{fmt(tot("aporte_inversion_2025"))}</TDTot>
+              <td style={{border:"1px solid #2d4a6e",background:"rgba(251,191,36,0.06)"}}/>
+              <TDTot color="#f87171">{fmt(tot("retiro_2025"))}</TDTot>
+              <TDTot>{fmt(tot("capital_2025"))}</TDTot>
+              <TDTot color="#4ade80">{fmt(tot("ganancia_2025"))}</TDTot>
+              <TDTot>{fmt(tot("total_2025"))}</TDTot>
+              <TDTot color="#f87171">{fmt(tot("retiro_final_2025"))}</TDTot>
+              <TDTot>{fmt(tot("total_inversion_2025"))}</TDTot>
+              <td style={{border:"1px solid #2d4a6e",background:"rgba(251,191,36,0.06)"}}/>
+              <TDTot>{fmt(tot("aporte_inversion_2026"))}</TDTot>
+              <td style={{border:"1px solid #2d4a6e",background:"rgba(251,191,36,0.06)"}}/>
+              <TDTot color="#f87171">{fmt(tot("retiro_2026"))}</TDTot>
+              <TDTot>{fmt(tot("capital_2026"))}</TDTot>
+              <TDTot color="#4ade80">{fmt(tot("ganancia_2026"))}</TDTot>
+              <TDTot>{fmt(tot("total_2026"))}</TDTot>
+              <TDTot color="#f87171">{fmt(tot("retiro_final_2026"))}</TDTot>
+              <TDTot color="#93c5fd" style={{fontSize:14}}>{fmt(tot("total_final_2026"))}</TDTot>
             </tr>
           </tfoot>
         </table>
