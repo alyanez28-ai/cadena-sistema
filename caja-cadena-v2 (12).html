@@ -288,7 +288,10 @@ function Dashboard({db}){
   const sociosAlDia=sociosCredito.filter(s=>diasMora(s.fecha_vence)===0).length;
   const sociosMoraCount=sociosCredito.filter(s=>diasMora(s.fecha_vence)>0).length;
   const NIIF={
-    creditos_activos:21,
+    creditos_activos:25,
+    mora_count:2,
+    reserva_legal_total:1459.18,
+    cuota_mensual_total:3934.67,
     monto_desembolsado:47856.27,
     capital_recuperado:11780.70,
     saldo_niif:36075.57,
@@ -368,9 +371,10 @@ function Dashboard({db}){
         <StatCard label="Total Ahorros" value={fmt(totalAhorros)} color={C.green}/>
         <StatCard label="Cartera NIIF" value={fmt(totalCarteraNiif)} sub="capital pendiente" color={C.blue}/>
         <StatCard label="Saldo Bancos" value={fmt(data?.total_bancos||0)} color={C.gold}/>
-        <StatCard label="Socios en Mora" value={sociosMoraCount} sub={`de ${sociosCredito.length} con crédito`} color={C.red}/>
+        <StatCard label="Socios en Mora" value={NIIF.mora_count} sub={`de ${NIIF.creditos_activos} créditos activos`} color={C.red}/>
+        <StatCard label="Reserva Legal" value={fmt(NIIF.reserva_legal_total)} sub="acumulada total" color={C.purple}/>
+        <StatCard label="Cuota Mensual Total" value={fmt(NIIF.cuota_mensual_total)} sub="ingreso mensual esperado" color={C.gold}/>
         <StatCard label="Sin Conciliar" value={data?.sin_conciliar||0} sub="movimientos" color={C.yellow}/>
-        <StatCard label="Patrimonio/Reserva" value={fmt(data?.total_patrimonio||0)} color={C.purple}/>
       </div>
 
       <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:20,marginBottom:20}}>
@@ -401,7 +405,7 @@ function Dashboard({db}){
               ["Int. devengado (cobrado)",fmt(NIIF.int_devengado),C.green],
               ["Int. por devengar",fmt(NIIF.int_por_devengar),C.yellow],
               ["Interés total período",fmt(NIIF.int_total),C.gold],
-              ["Cuota total mensual",fmt(totalCuotasMes),C.blue],
+              ["Cuota total mensual",fmt(NIIF.cuota_mensual_total),C.blue],
             ].map(([lbl,val,col])=>(
               <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
                 <span style={{color:C.muted,fontSize:11}}>{lbl}</span>
@@ -415,7 +419,7 @@ function Dashboard({db}){
               ["Recuperación capital",(NIIF.recuperacion*100).toFixed(2)+"%",C.green],
               ["Cartera pendiente",(NIIF.cartera_pend*100).toFixed(2)+"%",C.blue],
               ["Rendimiento int/capital",(NIIF.rendimiento*100).toFixed(2)+"%",C.gold],
-              ["Socios al día / mora",`${sociosAlDia} / ${sociosMoraCount}`,sociosMoraCount>0?C.red:C.green],
+              ["Socios al día / mora",`${NIIF.creditos_activos - NIIF.mora_count} / ${NIIF.mora_count}`,sociosMoraCount>0?C.red:C.green],
             ].map(([lbl,val,col])=>(
               <div key={lbl} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
                 <span style={{color:C.muted,fontSize:11}}>{lbl}</span>
