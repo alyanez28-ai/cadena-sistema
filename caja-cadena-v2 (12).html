@@ -44,8 +44,8 @@ const C = {
 };
 
 const PERMISOS = {
-  admin:    ["dashboard","transacciones","socios","cartera","conciliacion","estados","inversiones","reportes"],
-  contador: ["dashboard","cartera","conciliacion","inversiones","reportes"],
+  admin:    ["dashboard","transacciones","socios","cartera","conciliacion","estados","inversiones","contabilidad","reportes"],
+  contador: ["dashboard","cartera","conciliacion","inversiones","contabilidad","reportes"],
   credito:  ["dashboard","transacciones","socios","cartera"],
   tesorero: ["dashboard","transacciones","conciliacion","estados"],
 };
@@ -1801,6 +1801,389 @@ function Inversiones({db}){
   );
 }
 
+function Contabilidad({db, sesion}){
+  const [vista, setVista] = useState("situacion");
+  const [asientos, setAsientos] = useState([]);
+  const [detalle, setDetalle] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [socios, setSocios] = useState([]);
+  const [modalAsiento, setModalAsiento] = useState(false);
+  const [form, setForm] = useState({fecha:new Date().toISOString().slice(0,10), concepto:"", tipo:"INGRESO", partidas:[
+    {cuenta:"", nombre_cuenta:"", debe:0, haber:0, descripcion:""},
+    {cuenta:"", nombre_cuenta:"", debe:0, haber:0, descripcion:""}
+  ]});
+
+  const CUENTAS = [
+    {codigo:"1101", nombre:"Caja"},
+    {codigo:"1103.01", nombre:"Pichincha Flexible — Gemma Yánez"},
+    {codigo:"1103.02", nombre:"Pichincha Ahorros — Gemma Yánez"},
+    {codigo:"1103.03", nombre:"Pichincha Ahorros — Narcisa Heras"},
+    {codigo:"1103.04", nombre:"Pichincha Flexible — Narcisa Heras"},
+    {codigo:"1401", nombre:"Cartera créditos por vencer"},
+    {codigo:"1450", nombre:"Cartera créditos vencida mora"},
+    {codigo:"1614", nombre:"Intereses por cobrar — cartera"},
+    {codigo:"2101", nombre:"Depósitos a la vista — ahorros"},
+    {codigo:"2103", nombre:"Depósitos a plazo — inversiones"},
+    {codigo:"3103", nombre:"Reserva legal estatutaria"},
+    {codigo:"3301", nombre:"Excedentes acumulados 2025"},
+    {codigo:"3303", nombre:"Excedente del ejercicio 2026"},
+    {codigo:"4505", nombre:"Gastos operativos — suscripción"},
+    {codigo:"4506", nombre:"Gastos operativos — configuración"},
+    {codigo:"4590", nombre:"Otros gastos"},
+    {codigo:"5101", nombre:"Intereses ganados — cartera"},
+    {codigo:"5190", nombre:"Mora cobrada"},
+    {codigo:"5201", nombre:"Intereses ganados — bancos"},
+    {codigo:"5604", nombre:"Reserva legal cobrada"},
+    {codigo:"5690", nombre:"Otros ingresos"},
+  ];
+
+  const cargar = async()=>{
+    setCargando(true);
+    const [{data:a},{data:d},{data:s}] = await Promise.all([
+      db.from("asientos").select("*").order("fecha",{ascending:false}),
+      db.from("asiento_detalle").select("*"),
+      db.from("socios").select("saldo_ahorro,saldo_credito,cuota_mensual").eq("activo",true),
+    ]);
+    setAsientos(a||[]); setDetalle(d||[]); setSocios(s||[]);
+    setCargando(false);
+  };
+
+  useEffect(()=>{cargar();},[]);
+
+  const fmt=v=>`$${(parseFloat(v)||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",")}`;
+
+  // Calcular saldos del mayor por cuenta
+  const mayor=()=>{
+    const m={};
+    detalle.forEach(p=>{
+      if(!m[p.cuenta]) m[p.cuenta]={debe:0,haber:0};
+      m[p.cuenta].debe += parseFloat(p.debe)||0;
+      m[p.cuenta].haber += parseFloat(p.haber)||0;
+    });
+    return m;
+  };
+
+  const saldo=(cuenta)=>{
+    const m=mayor();
+    const nat = CUENTAS.find(c=>c.codigo===cuenta);
+    const d=(m[cuenta]?.debe||0), h=(m[cuenta]?.haber||0);
+    // Activos y gastos: saldo = debe - haber; Pasivos, patrimonio, ingresos: saldo = haber - debe
+    const esDeudora = cuenta.startsWith("1")||cuenta.startsWith("4");
+    return esDeudora ? d-h : h-d;
+  };
+
+  // Estado de Situación
+  const bancos = ["1103.01","1103.02","1103.03","1103.04"].reduce((a,c)=>a+saldo(c),0);
+  const cartera = saldo("1401");
+  const mora = saldo("1450");
+  const intCobrar = saldo("1614");
+  const totalActivo = bancos + cartera + mora + intCobrar;
+  const ahorros = saldo("2101");
+  const inversiones = saldo("2103");
+  const totalPasivo = ahorros + inversiones;
+  const reserva = saldo("3103");
+  const exc2025 = saldo("3301");
+  const exc2026 = saldo("3303");
+  const totalPat = reserva + exc2025 + exc2026;
+  const totalPasivoPat = totalPasivo + totalPat;
+
+  // Estado de Resultados
+  const ingresos = ["5101","5190","5201","5604","5690"].reduce((a,c)=>a+saldo(c),0);
+  const gastos = ["4505","4506","4590"].reduce((a,c)=>a+saldo(c),0);
+  const utilidad = ingresos - gastos;
+
+  // Guardar asiento
+  const guardarAsiento = async()=>{
+    const totalD = form.partidas.reduce((a,p)=>a+(parseFloat(p.debe)||0),0);
+    const totalH = form.partidas.reduce((a,p)=>a+(parseFloat(p.haber)||0),0);
+    if(Math.abs(totalD-totalH)>0.01){alert("❌ El asiento no cuadra. Debe = "+totalD.toFixed(2)+" Haber = "+totalH.toFixed(2));return;}
+    if(!form.concepto){alert("❌ Escribe un concepto");return;}
+    const num = "ASI-"+(asientos.length+2).toString().padStart(3,"0");
+    const {data:a} = await db.from("asientos").insert({
+      numero:num, fecha:form.fecha, concepto:form.concepto,
+      tipo:form.tipo, origen:"MANUAL", creado_por:sesion.nombre
+    }).select().single();
+    if(a){
+      await db.from("asiento_detalle").insert(
+        form.partidas.filter(p=>p.cuenta).map(p=>({...p,asiento_id:a.id,debe:parseFloat(p.debe)||0,haber:parseFloat(p.haber)||0}))
+      );
+      setModalAsiento(false);
+      cargar();
+    }
+  };
+
+  const BOX=({label,value,color,sub})=>(
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 18px",borderLeft:`3px solid ${color||C.blue}`}}>
+      <div style={{color:C.muted,fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:4}}>{label}</div>
+      <div style={{color:color||C.white,fontSize:18,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{value}</div>
+      {sub&&<div style={{color:C.muted,fontSize:11,marginTop:2}}>{sub}</div>}
+    </div>
+  );
+
+  const ROW=({label,value,bold,indent,color})=>(
+    <div style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:`1px solid ${C.border}`,paddingLeft:indent?20:0}}>
+      <span style={{color:bold?C.white:C.muted,fontSize:12,fontWeight:bold?"700":"400"}}>{label}</span>
+      <span style={{color:color||C.white,fontSize:13,fontWeight:bold?"800":"500",fontFamily:"'DM Mono',monospace"}}>{value}</span>
+    </div>
+  );
+
+  if(cargando) return <div style={{padding:40,textAlign:"center",color:C.muted}}>⏳ Cargando contabilidad...</div>;
+
+  const VISTAS=[
+    {id:"situacion",label:"📋 Estado de Situación"},
+    {id:"resultados",label:"📊 Estado de Resultados"},
+    {id:"mayor",label:"📖 Mayor General"},
+    {id:"diario",label:"📝 Libro Diario"},
+  ];
+
+  return(
+    <div style={{padding:20}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:10}}>
+        <div>
+          <h2 style={{color:C.white,fontSize:20,fontWeight:800,marginBottom:4}}>📒 Contabilidad CADENA</h2>
+          <p style={{color:C.muted,fontSize:13}}>CUC-SEPS Segmento 5 | Corte: 04 mayo 2026</p>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {VISTAS.map(v=>(
+            <button key={v.id} onClick={()=>setVista(v.id)}
+              style={{background:vista===v.id?C.blue:C.card,color:C.white,border:`1px solid ${vista===v.id?C.blue:C.border}`,
+              borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+              {v.label}
+            </button>
+          ))}
+          {sesion.rol==="admin"&&<button onClick={()=>setModalAsiento(true)}
+            style={{background:C.green,color:"#fff",border:"none",borderRadius:8,padding:"7px 14px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+            ➕ Nuevo Asiento
+          </button>}
+        </div>
+      </div>
+
+      {/* ESTADO DE SITUACIÓN */}
+      {vista==="situacion"&&(
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:20}}>
+            <BOX label="Total Activos" value={fmt(totalActivo)} color={C.blue}/>
+            <BOX label="Total Pasivos" value={fmt(totalPasivo)} color={C.red}/>
+            <BOX label="Patrimonio" value={fmt(totalPat)} color={C.green}/>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+            {/* ACTIVOS */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:18}}>
+              <div style={{color:C.blue,fontWeight:800,fontSize:13,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>ACTIVOS</div>
+              <ROW label="Bancos" value={fmt(bancos)} bold/>
+              <ROW label="  Flexible Gemma" value={fmt(saldo("1103.01"))} indent/>
+              <ROW label="  Ahorros Gemma" value={fmt(saldo("1103.02"))} indent/>
+              <ROW label="  Ahorros Narcisa" value={fmt(saldo("1103.03"))} indent/>
+              <ROW label="  Flexible Narcisa" value={fmt(saldo("1103.04"))} indent/>
+              <ROW label="Cartera vigente" value={fmt(cartera)} bold/>
+              <ROW label="Cartera en mora" value={fmt(mora)} bold color={C.red}/>
+              <ROW label="Intereses por cobrar" value={fmt(intCobrar)} bold color={C.yellow}/>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",marginTop:4}}>
+                <span style={{color:C.blue,fontWeight:800,fontSize:13}}>TOTAL ACTIVOS</span>
+                <span style={{color:C.blue,fontWeight:800,fontSize:15,fontFamily:"'DM Mono',monospace"}}>{fmt(totalActivo)}</span>
+              </div>
+            </div>
+            {/* PASIVOS + PATRIMONIO */}
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:18}}>
+              <div style={{color:C.red,fontWeight:800,fontSize:13,marginBottom:12,textTransform:"uppercase",letterSpacing:"0.06em"}}>PASIVOS</div>
+              <ROW label="Ahorros socios" value={fmt(ahorros)} bold/>
+              <ROW label="Inversiones fundadores" value={fmt(inversiones)} bold/>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{color:C.red,fontWeight:700,fontSize:12}}>TOTAL PASIVOS</span>
+                <span style={{color:C.red,fontWeight:700,fontSize:13,fontFamily:"'DM Mono',monospace"}}>{fmt(totalPasivo)}</span>
+              </div>
+              <div style={{color:C.green,fontWeight:800,fontSize:13,margin:"12px 0 8px",textTransform:"uppercase",letterSpacing:"0.06em"}}>PATRIMONIO</div>
+              <ROW label="Reserva legal estatutaria" value={fmt(reserva)} bold/>
+              <ROW label="Excedente 2025" value={fmt(exc2025)} bold/>
+              <ROW label="Excedente 2026" value={fmt(exc2026)} bold color={C.gold}/>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:`1px solid ${C.border}`}}>
+                <span style={{color:C.green,fontWeight:700,fontSize:12}}>TOTAL PATRIMONIO</span>
+                <span style={{color:C.green,fontWeight:700,fontSize:13,fontFamily:"'DM Mono',monospace"}}>{fmt(totalPat)}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",padding:"10px 0",marginTop:4}}>
+                <span style={{color:C.white,fontWeight:800,fontSize:13}}>TOTAL PASIVO + PATRIMONIO</span>
+                <span style={{color:totalPasivoPat===totalActivo?C.green:C.red,fontWeight:800,fontSize:15,fontFamily:"'DM Mono',monospace"}}>{fmt(totalPasivoPat)}</span>
+              </div>
+              {Math.abs(totalPasivoPat-totalActivo)<0.01&&<div style={{color:C.green,fontSize:12,textAlign:"center",marginTop:4}}>✅ Balance cuadrado</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ESTADO DE RESULTADOS */}
+      {vista==="resultados"&&(
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10,marginBottom:20}}>
+            <BOX label="Ingresos totales" value={fmt(ingresos)} color={C.green}/>
+            <BOX label="Gastos totales" value={fmt(gastos)} color={C.red}/>
+            <BOX label="Utilidad del período" value={fmt(utilidad)} color={utilidad>=0?C.gold:C.red}
+              sub={utilidad>=0?"Excedente positivo":"Déficit"}/>
+          </div>
+          <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:18,maxWidth:600}}>
+            <div style={{color:C.gold,fontWeight:800,fontSize:13,marginBottom:12,textTransform:"uppercase"}}>
+              ESTADO DE RESULTADOS — ENE A MAY 2026
+            </div>
+            <div style={{color:C.green,fontWeight:700,fontSize:12,marginBottom:8}}>INGRESOS</div>
+            <ROW label="Intereses ganados — cartera" value={fmt(saldo("5101"))} indent/>
+            <ROW label="Mora cobrada" value={fmt(saldo("5190"))} indent/>
+            <ROW label="Intereses ganados — bancos" value={fmt(saldo("5201"))} indent/>
+            <ROW label="Reserva legal cobrada" value={fmt(saldo("5604"))} indent/>
+            <ROW label="Otros ingresos" value={fmt(saldo("5690"))} indent/>
+            <ROW label="TOTAL INGRESOS" value={fmt(ingresos)} bold color={C.green}/>
+            <div style={{height:12}}/>
+            <div style={{color:C.red,fontWeight:700,fontSize:12,marginBottom:8}}>GASTOS</div>
+            <ROW label="Suscripción sistema ($60/mes)" value={fmt(saldo("4505"))} indent/>
+            <ROW label="Configuración sistema (pago único)" value={fmt(saldo("4506"))} indent/>
+            <ROW label="Otros gastos" value={fmt(saldo("4590"))} indent/>
+            <ROW label="TOTAL GASTOS" value={fmt(gastos)} bold color={C.red}/>
+            <div style={{display:"flex",justifyContent:"space-between",padding:"12px 0",marginTop:8,borderTop:`2px solid ${C.border}`}}>
+              <span style={{color:C.gold,fontWeight:800,fontSize:14}}>EXCEDENTE DEL PERÍODO</span>
+              <span style={{color:utilidad>=0?C.gold:C.red,fontWeight:800,fontSize:16,fontFamily:"'DM Mono',monospace"}}>{fmt(utilidad)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MAYOR GENERAL */}
+      {vista==="mayor"&&(
+        <div style={{overflowX:"auto"}}>
+          <table style={{borderCollapse:"collapse",width:"100%",fontSize:12}}>
+            <thead>
+              <tr style={{background:C.surface}}>
+                {["Código","Cuenta","Debe","Haber","Saldo","Tipo"].map(h=>(
+                  <th key={h} style={{border:`1px solid ${C.border}`,padding:"8px 12px",color:C.muted,fontWeight:700,textAlign:h==="Cuenta"?"left":"right",whiteSpace:"nowrap"}}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {CUENTAS.filter(c=>c.codigo.includes(".")).concat(CUENTAS.filter(c=>!c.codigo.includes(".")&&c.codigo.length>1)).map((c,i)=>{
+                const m=mayor();
+                const d=m[c.codigo]?.debe||0, h=m[c.codigo]?.haber||0;
+                const esDeudora=c.codigo.startsWith("1")||c.codigo.startsWith("4");
+                const sal=esDeudora?d-h:h-d;
+                const tipo=c.codigo.startsWith("1")?"ACTIVO":c.codigo.startsWith("2")?"PASIVO":c.codigo.startsWith("3")?"PATRIMONIO":c.codigo.startsWith("4")?"GASTO":"INGRESO";
+                const col={ACTIVO:C.blue,PASIVO:C.red,PATRIMONIO:C.green,GASTO:C.yellow,INGRESO:C.gold}[tipo];
+                if(d===0&&h===0) return null;
+                return(
+                  <tr key={c.codigo} style={{background:i%2===0?"transparent":"rgba(255,255,255,0.02)"}}>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",color:C.muted,fontFamily:"'DM Mono',monospace"}}>{c.codigo}</td>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",color:C.white}}>{c.nombre}</td>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",textAlign:"right",color:C.white,fontFamily:"'DM Mono',monospace"}}>{fmt(d)}</td>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",textAlign:"right",color:C.white,fontFamily:"'DM Mono',monospace"}}>{fmt(h)}</td>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",textAlign:"right",color:col,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>{fmt(sal)}</td>
+                    <td style={{border:`1px solid ${C.border}`,padding:"6px 12px",textAlign:"right"}}><span style={{background:`${col}22`,color:col,fontSize:10,padding:"2px 6px",borderRadius:4,fontWeight:700}}>{tipo}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* LIBRO DIARIO */}
+      {vista==="diario"&&(
+        <div>
+          {asientos.map(a=>{
+            const pars=detalle.filter(d=>d.asiento_id===a.id);
+            const totD=pars.reduce((s,p)=>s+(parseFloat(p.debe)||0),0);
+            return(
+              <div key={a.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16,marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <div>
+                    <span style={{color:C.gold,fontWeight:800,fontSize:13}}>{a.numero}</span>
+                    <span style={{color:C.muted,fontSize:12,marginLeft:12}}>{a.fecha}</span>
+                    <span style={{color:C.white,fontSize:13,marginLeft:12}}>{a.concepto}</span>
+                  </div>
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <span style={{background:`${C.blue}22`,color:C.blue,fontSize:11,padding:"2px 8px",borderRadius:4,fontWeight:700}}>{a.tipo}</span>
+                    <span style={{color:C.green,fontSize:13,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>{fmt(totD)}</span>
+                  </div>
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead>
+                    <tr>
+                      {["Cuenta","Descripción","Debe","Haber"].map(h=>(
+                        <th key={h} style={{color:C.muted,fontSize:10,fontWeight:700,textAlign:h.match(/Debe|Haber/)?"right":"left",padding:"4px 8px",borderBottom:`1px solid ${C.border}`}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pars.map((p,i)=>(
+                      <tr key={i}>
+                        <td style={{padding:"4px 8px",color:C.blue,fontFamily:"'DM Mono',monospace",fontSize:11}}>{p.cuenta} — {p.nombre_cuenta}</td>
+                        <td style={{padding:"4px 8px",color:C.muted,fontSize:11}}>{p.descripcion||""}</td>
+                        <td style={{padding:"4px 8px",textAlign:"right",color:p.debe>0?C.white:C.muted,fontFamily:"'DM Mono',monospace"}}>{p.debe>0?fmt(p.debe):"—"}</td>
+                        <td style={{padding:"4px 8px",textAlign:"right",color:p.haber>0?C.white:C.muted,fontFamily:"'DM Mono',monospace"}}>{p.haber>0?fmt(p.haber):"—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* MODAL NUEVO ASIENTO */}
+      {modalAsiento&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:24,width:"90%",maxWidth:700,maxHeight:"90vh",overflowY:"auto"}}>
+            <h3 style={{color:C.white,fontSize:16,fontWeight:800,marginBottom:16}}>➕ Nuevo Asiento Contable</h3>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:16}}>
+              {[["Fecha","fecha","date"],["Concepto","concepto","text"]].map(([lbl,key,tipo])=>(
+                <div key={key}>
+                  <div style={{color:C.muted,fontSize:11,marginBottom:4}}>{lbl}</div>
+                  <input type={tipo} value={form[key]} onChange={e=>setForm({...form,[key]:e.target.value})}
+                    style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13,boxSizing:"border-box"}}/>
+                </div>
+              ))}
+            </div>
+            <div style={{marginBottom:4}}>
+              <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Tipo</div>
+              <select value={form.tipo} onChange={e=>setForm({...form,tipo:e.target.value})}
+                style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13,width:"100%"}}>
+                {["INGRESO","GASTO","AJUSTE","APERTURA"].map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={{marginTop:16,marginBottom:8,color:C.white,fontWeight:700,fontSize:13}}>Partidas</div>
+            {form.partidas.map((p,i)=>(
+              <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:8,marginBottom:8}}>
+                <select value={p.cuenta} onChange={e=>{
+                  const c=CUENTAS.find(x=>x.codigo===e.target.value);
+                  const ps=[...form.partidas];ps[i]={...ps[i],cuenta:e.target.value,nombre_cuenta:c?.nombre||""};
+                  setForm({...form,partidas:ps});
+                }} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 10px",color:C.white,fontSize:12}}>
+                  <option value="">— Seleccionar cuenta —</option>
+                  {CUENTAS.map(c=><option key={c.codigo} value={c.codigo}>{c.codigo} — {c.nombre}</option>)}
+                </select>
+                {["debe","haber"].map(f=>(
+                  <input key={f} type="number" placeholder={f.charAt(0).toUpperCase()+f.slice(1)} value={p[f]||""}
+                    onChange={e=>{const ps=[...form.partidas];ps[i]={...ps[i],[f]:e.target.value};setForm({...form,partidas:ps});}}
+                    style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"7px 10px",color:C.white,fontSize:12}}/>
+                ))}
+              </div>
+            ))}
+            <button onClick={()=>setForm({...form,partidas:[...form.partidas,{cuenta:"",nombre_cuenta:"",debe:0,haber:0,descripcion:""}]})}
+              style={{background:"transparent",border:`1px dashed ${C.border}`,color:C.muted,borderRadius:8,padding:"6px 16px",fontSize:12,cursor:"pointer",marginBottom:12}}>
+              + Agregar partida
+            </button>
+            <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:8}}>
+              <button onClick={()=>setModalAsiento(false)}
+                style={{background:C.card,color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 20px",fontSize:13,cursor:"pointer"}}>
+                Cancelar
+              </button>
+              <button onClick={guardarAsiento}
+                style={{background:C.blue,color:"#fff",border:"none",borderRadius:8,padding:"9px 20px",fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                Guardar Asiento
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Reportes({db}){
   const [buscar,setBuscar]=useState("");
   const [mes,setMes]=useState(new Date().getMonth()+1);
@@ -2030,6 +2413,7 @@ function App(){
     {id:"conciliacion", icon:"🏦",label:"Conciliación"},
     {id:"estados",      icon:"📱",label:"Estados"},
     {id:"inversiones",  icon:"📈",label:"Inversiones"},
+    {id:"contabilidad", icon:"📒",label:"Contabilidad"},
     {id:"reportes",     icon:"📋",label:"Reportes"},
   ].filter(t=>PERMISOS[sesion.rol]?.includes(t.id));
 
@@ -2071,6 +2455,7 @@ function App(){
         {tab==="conciliacion" &&<Conciliacion db={db}/>}
         {tab==="estados"      &&<Estados db={db}/>}
         {tab==="inversiones"  &&<Inversiones db={db}/>}
+        {tab==="contabilidad" &&<Contabilidad db={db} sesion={sesion}/>}
         {tab==="reportes"     &&<Reportes db={db}/>}
       </div>
     </div>
