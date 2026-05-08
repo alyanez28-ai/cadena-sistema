@@ -44,8 +44,8 @@ const C = {
 };
 
 const PERMISOS = {
-  admin:    ["dashboard","transacciones","socios","cartera","conciliacion","estados","reportes"],
-  contador: ["dashboard","cartera","conciliacion","reportes"],
+  admin:    ["dashboard","transacciones","socios","cartera","conciliacion","estados","inversiones","reportes"],
+  contador: ["dashboard","cartera","conciliacion","inversiones","reportes"],
   credito:  ["dashboard","transacciones","socios","cartera"],
   tesorero: ["dashboard","transacciones","conciliacion","estados"],
 };
@@ -1639,6 +1639,160 @@ _Gracias por confiar en CADENA_ 🤝`;
   );
 }
 
+function Inversiones({db}){
+  const [datos,setDatos]=useState([]);
+  const [cargando,setCargando]=useState(true);
+  const [error,setError]=useState("");
+  const [filtro,setFiltro]=useState("");
+
+  useEffect(()=>{
+    db.from("inversiones").select("*").order("nombre").then(({data,error})=>{
+      if(error){setError(error.message);}
+      else{setDatos(data||[]);}
+      setCargando(false);
+    });
+  },[]);
+
+  const fmt=v=>v?`$${parseFloat(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,",")}`:"-";
+  const fmtFecha=f=>f?new Date(f).toLocaleDateString("es-EC",{day:"2-digit",month:"2-digit",year:"numeric"}):"-";
+
+  const filtrados=datos.filter(r=>r.nombre.toLowerCase().includes(filtro.toLowerCase()));
+
+  // Totales
+  const tot=(campo)=>filtrados.reduce((a,r)=>a+(parseFloat(r[campo])||0),0);
+
+  if(cargando)return <div className="p-8 text-center">⏳ Cargando inversiones...</div>;
+  if(error)return <div className="p-8 text-red-500">❌ {error}</div>;
+
+  const thC="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-gray-100 whitespace-nowrap";
+  const thL="border border-gray-300 px-2 py-1 text-left text-xs font-bold bg-gray-100";
+  const td="border border-gray-300 px-2 py-1 text-right text-xs whitespace-nowrap";
+  const tdL="border border-gray-300 px-2 py-1 text-left text-xs";
+  const tdTot="border border-gray-300 px-2 py-1 text-right text-xs font-bold bg-yellow-50 whitespace-nowrap";
+
+  return(
+    <div className="p-4">
+      <div className="flex justify-between items-center mb-4">
+        <div>
+          <h2 className="text-xl font-bold text-blue-800">📈 Inversiones Socios Fundadores</h2>
+          <p className="text-sm text-gray-500">{filtrados.length} inversores | Total 2026: {fmt(tot("total_final_2026"))}</p>
+        </div>
+        <div className="flex gap-2">
+          <input value={filtro} onChange={e=>setFiltro(e.target.value)}
+            className="border rounded px-3 py-1 text-sm" placeholder="🔍 Buscar inversor..."/>
+          <button onClick={()=>window.print()}
+            className="bg-green-600 text-white px-4 py-1 rounded text-sm hover:bg-green-700">
+            🖨️ Imprimir
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto text-xs" id="tabla-inversiones">
+        <div className="text-center mb-2 print:block">
+          <div className="font-bold text-base">FINANCIERA CADENA — CAJA DE AHORRO Y CRÉDITO</div>
+          <div className="text-sm">INFORME INVERSIONES SOCIOS FUNDADORES — PERÍODO 2024 AL 2026</div>
+        </div>
+        <table className="border-collapse w-full text-xs" style={{minWidth:"1800px"}}>
+          <thead>
+            <tr>
+              <th className={thL} rowSpan={2} style={{minWidth:"180px"}}>APELLIDOS Y NOMBRES</th>
+              {/* 2024 */}
+              <th colSpan={5} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-blue-100">PERÍODO 2024</th>
+              {/* 2025 */}
+              <th colSpan={9} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-green-100">PERÍODO 2025</th>
+              {/* 2026 */}
+              <th colSpan={9} className="border border-gray-300 px-2 py-1 text-center text-xs font-bold bg-orange-100">PERÍODO 2026</th>
+            </tr>
+            <tr>
+              <th className={`${thC} bg-blue-50`}>INVERSIÓN</th>
+              <th className={`${thC} bg-blue-50`}>GANANCIA</th>
+              <th className={`${thC} bg-blue-50`}>TOTAL</th>
+              <th className={`${thC} bg-blue-50`}>RETIRO</th>
+              <th className={`${thC} bg-blue-50`}>TOTAL FINAL</th>
+              <th className={`${thC} bg-green-50`}>FECHA INV.</th>
+              <th className={`${thC} bg-green-50`}>APORTE</th>
+              <th className={`${thC} bg-green-50`}>FECHA RET.</th>
+              <th className={`${thC} bg-green-50`}>RETIRO</th>
+              <th className={`${thC} bg-green-50`}>CAPITAL</th>
+              <th className={`${thC} bg-green-50`}>GANANCIA</th>
+              <th className={`${thC} bg-green-50`}>TOTAL</th>
+              <th className={`${thC} bg-green-50`}>RET. FINAL</th>
+              <th className={`${thC} bg-green-50`}>TOTAL INV.</th>
+              <th className={`${thC} bg-orange-50`}>FECHA INV.</th>
+              <th className={`${thC} bg-orange-50`}>APORTE</th>
+              <th className={`${thC} bg-orange-50`}>FECHA RET.</th>
+              <th className={`${thC} bg-orange-50`}>RETIRO</th>
+              <th className={`${thC} bg-orange-50`}>CAPITAL</th>
+              <th className={`${thC} bg-orange-50`}>GANANCIA</th>
+              <th className={`${thC} bg-orange-50`}>TOTAL</th>
+              <th className={`${thC} bg-orange-50`}>RET. FINAL</th>
+              <th className={`${thC} bg-orange-50 font-bold`}>TOTAL FINAL</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtrados.map((r,i)=>(
+              <tr key={r.id} className={i%2===0?"bg-white":"bg-gray-50"}>
+                <td className={tdL}>{r.nombre}</td>
+                <td className={td}>{fmt(r.inversion_2024)}</td>
+                <td className={td}>{fmt(r.ganancia_2024)}</td>
+                <td className={td}>{fmt(r.total_2024)}</td>
+                <td className={td}>{fmt(r.retiro_2024)}</td>
+                <td className={`${td} font-semibold`}>{fmt(r.total_final_2024)}</td>
+                <td className={td}>{fmtFecha(r.fecha_inversion_2025)}</td>
+                <td className={td}>{fmt(r.aporte_inversion_2025)}</td>
+                <td className={td}>{fmtFecha(r.fecha_retiro_2025)}</td>
+                <td className={td}>{fmt(r.retiro_2025)}</td>
+                <td className={td}>{fmt(r.capital_2025)}</td>
+                <td className={td}>{fmt(r.ganancia_2025)}</td>
+                <td className={td}>{fmt(r.total_2025)}</td>
+                <td className={td}>{fmt(r.retiro_final_2025)}</td>
+                <td className={`${td} font-semibold`}>{fmt(r.total_inversion_2025)}</td>
+                <td className={td}>{fmtFecha(r.fecha_inversion_2026)}</td>
+                <td className={td}>{fmt(r.aporte_inversion_2026)}</td>
+                <td className={td}>{fmtFecha(r.fecha_retiro_2026)}</td>
+                <td className={td}>{fmt(r.retiro_2026)}</td>
+                <td className={td}>{fmt(r.capital_2026)}</td>
+                <td className={td}>{fmt(r.ganancia_2026)}</td>
+                <td className={td}>{fmt(r.total_2026)}</td>
+                <td className={td}>{fmt(r.retiro_final_2026)}</td>
+                <td className={`${td} font-bold text-blue-800`}>{fmt(r.total_final_2026)}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="bg-yellow-100">
+              <td className={`${tdL} font-bold`}>TOTALES</td>
+              <td className={tdTot}>{fmt(tot("inversion_2024"))}</td>
+              <td className={tdTot}>{fmt(tot("ganancia_2024"))}</td>
+              <td className={tdTot}>{fmt(tot("total_2024"))}</td>
+              <td className={tdTot}>{fmt(tot("retiro_2024"))}</td>
+              <td className={tdTot}>{fmt(tot("total_final_2024"))}</td>
+              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
+              <td className={tdTot}>{fmt(tot("aporte_inversion_2025"))}</td>
+              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
+              <td className={tdTot}>{fmt(tot("retiro_2025"))}</td>
+              <td className={tdTot}>{fmt(tot("capital_2025"))}</td>
+              <td className={tdTot}>{fmt(tot("ganancia_2025"))}</td>
+              <td className={tdTot}>{fmt(tot("total_2025"))}</td>
+              <td className={tdTot}>{fmt(tot("retiro_final_2025"))}</td>
+              <td className={tdTot}>{fmt(tot("total_inversion_2025"))}</td>
+              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
+              <td className={tdTot}>{fmt(tot("aporte_inversion_2026"))}</td>
+              <td className="border border-gray-300 px-2 py-1 bg-yellow-50"/>
+              <td className={tdTot}>{fmt(tot("retiro_2026"))}</td>
+              <td className={tdTot}>{fmt(tot("capital_2026"))}</td>
+              <td className={tdTot}>{fmt(tot("ganancia_2026"))}</td>
+              <td className={tdTot}>{fmt(tot("total_2026"))}</td>
+              <td className={tdTot}>{fmt(tot("retiro_final_2026"))}</td>
+              <td className={`${tdTot} text-blue-800 text-sm`}>{fmt(tot("total_final_2026"))}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function Reportes({db}){
   const [buscar,setBuscar]=useState("");
   const [mes,setMes]=useState(new Date().getMonth()+1);
@@ -1867,6 +2021,7 @@ function App(){
     {id:"cartera",      icon:"💳",label:"Cartera"},
     {id:"conciliacion", icon:"🏦",label:"Conciliación"},
     {id:"estados",      icon:"📱",label:"Estados"},
+    {id:"inversiones",  icon:"📈",label:"Inversiones"},
     {id:"reportes",     icon:"📋",label:"Reportes"},
   ].filter(t=>PERMISOS[sesion.rol]?.includes(t.id));
 
@@ -1907,6 +2062,7 @@ function App(){
         {tab==="cartera"      &&<Cartera db={db}/>}
         {tab==="conciliacion" &&<Conciliacion db={db}/>}
         {tab==="estados"      &&<Estados db={db}/>}
+        {tab==="inversiones"  &&<Inversiones db={db}/>}
         {tab==="reportes"     &&<Reportes db={db}/>}
       </div>
     </div>
