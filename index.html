@@ -1348,27 +1348,48 @@ function Conciliacion({db}){
           const arr=XLSX.utils.sheet_to_json(ws,{header:1,defval:""});
           if(!arr||arr.length<2){setImportMsg("❌ No se pudo leer el Excel.");return;}
 
-          // Buscar la fila de cabeceras reales (la que tenga "Fecha" o "fecha" en la primera celda)
-          // Pichincha tiene 5 filas de encabezado institucional antes de los datos
+          // Detectar formato Pichincha:
+          // FORMATO VIEJO: 7 cols, Fecha en col 0
+          // FORMATO NUEVO: 16 cols, Fecha en col 3, filas alternas con nro documento
           let headerRowIdx=0;
-          for(let i=0;i<arr.length;i++){
-            const first=String(arr[i][0]||"").trim().toLowerCase();
-            if(first==="fecha"||first==="date"){headerRowIdx=i;break;}
+          let formatoNuevo=false;
+          for(let i=0;i<Math.min(arr.length,10);i++){
+            const rowStr=arr[i].map(c=>String(c||"").trim().toLowerCase());
+            const fechaCol=rowStr.indexOf("fecha");
+            if(fechaCol>=0){headerRowIdx=i;formatoNuevo=fechaCol>0;break;}
           }
 
-          hdrs=arr[headerRowIdx].map(h=>String(h).trim()).filter(h=>h!=="");
-          // Tomar solo filas de datos: después de la cabecera, que tengan al menos una celda con valor
-          // y cuya primera celda parezca una fecha (empieza con 4 dígitos = año)
-          rows=arr.slice(headerRowIdx+1)
-            .filter(r=>{
-              const first=String(r[0]||"").trim();
-              return first.match(/^\d{4}/)&&r.some(c=>c!=="");
-            })
-            .map(r=>{
-              const obj={};
-              hdrs.forEach((h,i)=>obj[h]=r[i]!==undefined&&r[i]!==null?String(r[i]).replace(/\n/g," ").trim():"");
-              return obj;
-            });
+          if(formatoNuevo){
+            // FORMATO NUEVO: Fecha=col3, Concepto=col4, Tipo=col10, Monto=col14
+            const dataRows=[];
+            for(let i=headerRowIdx+1;i<arr.length;i++){
+              const row=arr[i];
+              const fechaRaw=String(row[3]||"").trim();
+              if(fechaRaw.match(/^\d{4}-\d{1,2}-\d{1,2}/)){
+                const montoStr=String(row[14]||"").replace(/[$\s]/g,"").replace(/\./g,"").replace(",",".");
+                const monto=parseFloat(montoStr)||0;
+                const concepto=String(row[4]||"").trim();
+                if(concepto&&monto!==0){
+                  dataRows.push({Fecha:fechaRaw,Concepto:concepto,Monto:monto.toString()});
+                }
+              }
+            }
+            hdrs=["Fecha","Concepto","Monto"];
+            rows=dataRows;
+          } else {
+            // FORMATO VIEJO: Fecha en col 0
+            hdrs=arr[headerRowIdx].map(h=>String(h).trim()).filter(h=>h!=="");
+            rows=arr.slice(headerRowIdx+1)
+              .filter(r=>{
+                const first=String(r[0]||"").trim();
+                return first.match(/^\d{4}/)&&r.some(c=>c!=="");
+              })
+              .map(r=>{
+                const obj={};
+                hdrs.forEach((h,i)=>obj[h]=r[i]!==undefined&&r[i]!==null?String(r[i]).replace(/\n/g," ").trim():"");
+                return obj;
+              });
+          }
         }catch(err){setImportMsg("❌ Error leyendo Excel: "+err.message);return;}
       }else{
         const res=parseCSV(e.target.result);hdrs=res.headers;rows=res.rows;
