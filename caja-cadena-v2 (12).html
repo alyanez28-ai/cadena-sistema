@@ -1295,15 +1295,33 @@ function Conciliacion({db}){
   };
 
   const autoConciliar=async()=>{
-    let count=0;
-    for(const mov of movimientos.filter(m=>!m.conciliado)){
+    let countCedula=0, countInteres=0;
+    const pendientes=movimientos.filter(m=>!m.conciliado);
+
+    for(const mov of pendientes){
+      const desc=(mov.descripcion||"").toUpperCase();
+
+      // Auto-conciliar intereses bancarios — sin asiento manual, genera asiento automático
+      const esInteres=desc.includes("INTERES A SU FAVOR")||
+                      desc.includes("INTERÉS ACREDITADO")||
+                      desc.includes("INTERES ACREDITADO")||
+                      desc.includes("INTERES ACREDITADO EN SU CUENTA");
+      if(esInteres){
+        await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
+        await generarAsientoContable(mov,"interes_banco");
+        countInteres++;
+        continue;
+      }
+
+      // Auto-conciliar por cédula del socio
       const socio=socios.find(s=>mov.descripcion?.includes(s.cedula));
       if(socio){
         await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
-        count++;
+        countCedula++;
       }
     }
-    alert(`✅ ${count} movimientos conciliados automáticamente por cédula.`);
+
+    alert(`✅ ${countInteres} intereses bancarios + ${countCedula} por cédula = ${countInteres+countCedula} conciliados automáticamente.`);
     cargarMovimientos(sel.id);
   };
 
