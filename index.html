@@ -1168,6 +1168,13 @@ function Conciliacion({db}){
   const [tipoConciliar,setTipoConciliar]=useState("ahorro");
   const [socioConciliar,setSocioConciliar]=useState("");
 
+  const CUENTAS_MAP={
+    "1103.01":"Pichincha Flexible — Gemma Yánez",
+    "1103.02":"Pichincha Ahorros — Gemma Yánez",
+    "1103.03":"Pichincha Ahorros — Narcisa Heras",
+    "1103.04":"Pichincha Flexible — Narcisa Heras",
+  };
+
   const generarAsientoContable=async(mov,tipo,socioId)=>{
     const monto=Math.abs(parseFloat(mov.monto)||0);
     const esCredito=parseFloat(mov.monto)>0;
@@ -1206,6 +1213,21 @@ function Conciliacion({db}){
         {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
         {cuenta:"5201",nombre_cuenta:"Intereses ganados — bancos",debe:0,haber:monto},
       ];
+    } else if(tipo==="transferencia_interna"){
+      // Determinar cuenta destino (la otra cuenta del mismo titular)
+      const esGemma=cuentaBanco==="1103.01"||cuentaBanco==="1103.02";
+      const esCredito2=parseFloat(mov.monto)>0;
+      // Si entra dinero: viene de la cuenta ahorros → flex (o viceversa)
+      const cuentaOrigen = esGemma
+        ? (cuentaBanco==="1103.01"?"1103.02":"1103.01")
+        : (cuentaBanco==="1103.04"?"1103.03":"1103.04");
+      const nomOrigen = CUENTAS_MAP[cuentaOrigen]||"Cuenta interna";
+      concepto=`Transferencia interna — ${mov.descripcion?.slice(0,50)}`;
+      partidas = esCredito2
+        ? [{cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
+           {cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:0,haber:monto}]
+        : [{cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:monto,haber:0},
+           {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:0,haber:monto}];
     } else if(tipo==="gasto_suscripcion"&&!esCredito){
       concepto=`Gasto suscripción sistema — ${mov.descripcion?.slice(0,50)}`;
       partidas=[
@@ -1596,10 +1618,12 @@ function Conciliacion({db}){
                 {id:"cuota",      label:"💳 Pago de cuota de crédito",           color:C.blue},
                 {id:"mora",       label:"⚠️ Cobro de mora",                      color:C.red},
                 {id:"interes_banco",label:"🏦 Interés acreditado banco",         color:C.purple},
+                {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]:[
                 {id:"gasto_suscripcion",label:"💻 Pago suscripción sistema ($60/mes)", color:C.yellow},
                 {id:"gasto_config",     label:"⚙️ Pago configuración sistema",          color:C.yellow},
                 {id:"desembolso",       label:"💸 Desembolso de crédito a socio",       color:C.red},
+                {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]).map(t=>(
                 <button key={t.id} onClick={()=>setTipoConciliar(t.id)}
                   style={{background:tipoConciliar===t.id?`${t.color}22`:"transparent",
