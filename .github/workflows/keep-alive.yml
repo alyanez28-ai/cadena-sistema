@@ -1,8 +1,6 @@
 name: Supabase Keep-Alive
 
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: '0 12 */2 * *'
   workflow_dispatch:
@@ -14,7 +12,7 @@ jobs:
       - name: Ping Supabase
         run: |
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-            "https://rbdaahtmrhtfkjxzexan.supabase.co/rest/v1/socias?select=id&limit=1" \
+            "https://rbdaahtmrhtfkjxzexan.supabase.co/rest/v1/socios?select=id&limit=1" \
             -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJiZGFhaHRtcmh0ZmtqeHpleGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjI5NjQsImV4cCI6MjA4OTQzODk2NH0.17RO690wgPS9TvnbwhDXfCnFKIrg1kCAfeBN5tqzagg" \
             -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJiZGFhaHRtcmh0ZmtqeHpleGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjI5NjQsImV4cCI6MjA4OTQzODk2NH0.17RO690wgPS9TvnbwhDXfCnFKIrg1kCAfeBN5tqzagg")
           echo "HTTP Status: $HTTP_CODE"
