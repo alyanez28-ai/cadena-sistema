@@ -1168,6 +1168,8 @@ function Conciliacion({db}){
   const [modalConciliar,setModalConciliar]=useState(null);
   const [tipoConciliar,setTipoConciliar]=useState("ahorro");
   const [socioConciliar,setSocioConciliar]=useState("");
+  const [rol,setRol]=useState("Anita Malán · Gte. Crédito");
+  const esAnita=rol.includes("Anita"), esMartha=rol.includes("Martha");
 
   const CUENTAS_MAP={
     "1103.01":"Pichincha Flexible — Gemma Yánez",
@@ -1301,69 +1303,69 @@ function Conciliacion({db}){
     return await postAsiento({fecha,concepto,partidas,referencia:`MOV-${mov.id}`});
   };
 
-  const toggleConciliar=async(mov)=>{
-    if(mov.conciliado){
-      // Desconciliar — solo actualiza estado
-      await db.from("movimientos_banco").update({conciliado:false}).eq("id",mov.id);
-      setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,conciliado:false}:m));
-      return;
-    }
-    // Auto-detectar interés bancario
+  // ── ETAPA 2: DOBLE FIRMA ──
+  // ANITA (Gte. Crédito) → revisa y clasifica. NO contabiliza.
+  const revisarMov=(mov)=>{
     const desc=(mov.descripcion||"").toUpperCase();
-    if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")){
-      try{
-        await generarAsientoContable(mov,"interes_banco");
-        await db.from("movimientos_banco").update({conciliado:true,estado:"contabilizado",tipo_mov:"interes_banco"}).eq("id",mov.id);
-        setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,conciliado:true}:m));
-      }catch(err){ alert("❌ No se pudo contabilizar: "+err.message); }
-      return;
-    }
-    // Para los demás, abrir modal de clasificación
+    let sug=parseFloat(mov.monto)<0?"comision":"ahorro";
+    if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")) sug="interes_banco";
     setModalConciliar(mov);
-    setTipoConciliar(parseFloat(mov.monto)<0?"comision":"ahorro");
-    setSocioConciliar("");
+    setTipoConciliar(mov.tipo_mov||sug);
+    setSocioConciliar(mov.socio_id||"");
   };
-
-  const confirmarConciliacion=async()=>{
+  const confirmarRevision=async()=>{
     if(!modalConciliar) return;
+    const patch={estado:"revisado",tipo_mov:tipoConciliar,socio_id:socioConciliar||null,revisado_por:rol,revisado_at:new Date().toISOString()};
+    const {error}=await db.from("movimientos_banco").update(patch).eq("id",modalConciliar.id);
+    if(error){ alert("❌ "+error.message); return; }
+    setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,...patch}:m));
+    setModalConciliar(null);
+  };
+  // MARTHA (Contabilidad) → aprueba. AQUÍ se postea el asiento.
+  const aprobarMov=async(mov)=>{
     try{
-      await generarAsientoContable(modalConciliar,tipoConciliar,socioConciliar);
-      await db.from("movimientos_banco").update({conciliado:true,estado:"contabilizado",tipo_mov:tipoConciliar,socio_id:socioConciliar||null}).eq("id",modalConciliar.id);
-      setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,conciliado:true}:m));
-      setModalConciliar(null);
+      const aid=await generarAsientoContable(mov,mov.tipo_mov,mov.socio_id);
+      const patch={estado:"contabilizado",conciliado:true,aprobado_por:rol,aprobado_at:new Date().toISOString(),asiento_id:aid||null};
+      await db.from("movimientos_banco").update(patch).eq("id",mov.id);
+      setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,...patch}:m));
     }catch(err){ alert("❌ No se pudo contabilizar: "+err.message); }
   };
-
-  const autoConciliar=async()=>{
-    let countCedula=0, countInteres=0;
-    const pendientes=movimientos.filter(m=>!m.conciliado);
-
-    for(const mov of pendientes){
+  const rechazarMov=async(mov)=>{
+    const patch={estado:"rechazado",revisado_por:rol,revisado_at:new Date().toISOString()};
+    await db.from("movimientos_banco").update(patch).eq("id",mov.id);
+    setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,...patch}:m));
+  };
+  // ANITA → auto-clasifica (deja en 'revisado', nunca contabiliza)
+  const autoClasificar=async()=>{
+    let nInt=0,nCed=0;
+    const pend=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado));
+    for(const mov of pend){
       const desc=(mov.descripcion||"").toUpperCase();
-
-      // Auto-conciliar intereses bancarios — sin asiento manual, genera asiento automático
-      const esInteres=desc.includes("INTERES A SU FAVOR")||
-                      desc.includes("INTERÉS ACREDITADO")||
-                      desc.includes("INTERES ACREDITADO")||
-                      desc.includes("INTERES ACREDITADO EN SU CUENTA");
-      if(esInteres){
-        try{
-          await generarAsientoContable(mov,"interes_banco");
-          await db.from("movimientos_banco").update({conciliado:true,estado:"contabilizado",tipo_mov:"interes_banco"}).eq("id",mov.id);
-          countInteres++;
-        }catch(err){ /* salta este, sigue */ }
-        continue;
+      if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")){
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"interes_banco",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nInt++; continue;
       }
-
-      // Auto-conciliar por cédula del socio
-      const socio=socios.find(s=>mov.descripcion?.includes(s.cedula));
+      const socio=socios.find(s=>s.cedula&&mov.descripcion?.includes(s.cedula));
       if(socio){
-        await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
-        countCedula++;
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:(parseFloat(mov.monto)>0?"cuota":"desembolso"),socio_id:socio.id,revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nCed++;
       }
     }
-
-    alert(`✅ ${countInteres} intereses bancarios + ${countCedula} por cédula = ${countInteres+countCedula} conciliados automáticamente.`);
+    alert(`✅ Auto-clasificados: ${nInt} intereses + ${nCed} por cédula = ${nInt+nCed}. Quedan en 'revisado' para que Martha apruebe.`);
+    cargarMovimientos(sel.id);
+  };
+  // MARTHA → aprueba todos los 'revisado' de golpe
+  const aprobarTodos=async()=>{
+    const rev=movimientos.filter(m=>m.estado==="revisado");
+    if(!rev.length){ alert("No hay movimientos en estado 'revisado'."); return; }
+    if(!window.confirm(`¿Aprobar y contabilizar ${rev.length} movimientos revisados?`)) return;
+    let ok=0,fail=0;
+    for(const mov of rev){
+      try{ const aid=await generarAsientoContable(mov,mov.tipo_mov,mov.socio_id);
+        await db.from("movimientos_banco").update({estado:"contabilizado",conciliado:true,aprobado_por:rol,aprobado_at:new Date().toISOString(),asiento_id:aid||null}).eq("id",mov.id); ok++;
+      }catch(err){ fail++; }
+    }
+    alert(`✅ ${ok} contabilizados${fail?` · ⚠️ ${fail} con error`:""}.`);
     cargarMovimientos(sel.id);
   };
 
@@ -1505,6 +1507,9 @@ function Conciliacion({db}){
 
   const diff=sel?(sel.saldo_banco-sel.saldo_sistema):0;
   const sinConc=movimientos.filter(m=>!m.conciliado).length;
+  const nProp=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado)).length;
+  const nRev=movimientos.filter(m=>m.estado==="revisado").length;
+  const nCont=movimientos.filter(m=>m.estado==="contabilizado"||m.conciliado).length;
 
   return(
     <div>
@@ -1514,10 +1519,22 @@ function Conciliacion({db}){
           <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar movimiento..."/>
           <p style={{color:C.muted,fontSize:13}}>4 cuentas bancarias · Cruce automático por cédula</p>
         </div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={autoConciliar} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🤖 Auto-Conciliar</button>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"4px 6px"}}>
+            <span style={{color:C.muted,fontSize:11}}>Firmas:</span>
+            {["Anita Malán · Gte. Crédito","Martha Yánez · Contabilidad"].map(r=>(
+              <button key={r} onClick={()=>setRol(r)} style={{background:rol===r?C.gold:"transparent",color:rol===r?"#000":C.muted,border:"none",borderRadius:6,padding:"5px 10px",fontWeight:700,fontSize:11,cursor:"pointer"}}>{r.includes("Anita")?"Anita (Crédito)":"Martha (Contab.)"}</button>
+            ))}
+          </div>
+          {esAnita&&<button onClick={autoClasificar} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🤖 Auto-clasificar</button>}
+          {esMartha&&<button onClick={aprobarTodos} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>✓✓ Aprobar revisados ({nRev})</button>}
           <button onClick={()=>{setModalImport(true);setStep(1);}} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>📂 Importar</button>
         </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        <span style={{background:`${C.yellow}18`,color:C.yellow,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Propuestos: {nProp}</span>
+        <span style={{background:`${C.blue}18`,color:C.blue,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Revisados: {nRev}</span>
+        <span style={{background:`${C.green}18`,color:C.green,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Contabilizados: {nCont}</span>
       </div>
 
       <div className="four-col" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
@@ -1570,12 +1587,25 @@ function Conciliacion({db}){
                           <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}</td>
                           <td style={{padding:"11px 14px",color:C.white,fontSize:13,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}</td>
                           <td style={{padding:"11px 14px",fontSize:13,fontFamily:"'DM Mono',monospace",fontWeight:700,color:m.monto>0?C.green:C.red,whiteSpace:"nowrap"}}>{m.monto>0?"+":""}{fmt(Math.abs(m.monto))}</td>
-                          <td style={{padding:"11px 14px"}}><Badge color={m.conciliado?"green":"yellow"}>{m.conciliado?"Conciliado":"Pendiente"}</Badge></td>
-                          <td style={{padding:"11px 14px"}}>
-                            <button onClick={()=>toggleConciliar(m)} style={{background:"transparent",border:`1px solid ${m.conciliado?C.muted:C.gold}`,color:m.conciliado?C.muted:C.gold,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
-                              {m.conciliado?"Desmarcar":"✓ Conciliar"}
-                            </button>
-                          </td>
+                          <td style={{padding:"11px 14px"}}>{(()=>{
+                            const e=m.estado||(m.conciliado?"contabilizado":"propuesto");
+                            const map={propuesto:["yellow","Propuesto"],revisado:["blue","Revisado"],contabilizado:["green","Contabilizado"],rechazado:["red","Rechazado"]};
+                            const[col,lab]=map[e]||["yellow","Propuesto"];
+                            return <Badge color={col}>{lab}</Badge>;
+                          })()}</td>
+                          <td style={{padding:"11px 14px"}}>{(()=>{
+                            const e=m.estado||(m.conciliado?"contabilizado":"propuesto");
+                            if(e==="contabilizado") return <span style={{color:C.muted,fontSize:11,whiteSpace:"nowrap"}} title={m.aprobado_por||""}>✓ {m.aprobado_por?m.aprobado_por.split("·")[0]:"OK"}</span>;
+                            if(e==="revisado"){
+                              if(esMartha) return <div style={{display:"flex",gap:6}}>
+                                <button onClick={()=>aprobarMov(m)} style={{background:C.green,border:"none",color:"#000",borderRadius:6,padding:"4px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>Aprobar</button>
+                                <button onClick={()=>rechazarMov(m)} style={{background:"transparent",border:`1px solid ${C.red}`,color:C.red,borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button></div>;
+                              return <span onClick={()=>revisarMov(m)} style={{color:C.blue,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}} title="Re-revisar">revisado ✎ espera Martha</span>;
+                            }
+                            if(e==="rechazado") return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.muted}`,color:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>Reabrir</button>;
+                            if(esAnita) return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.gold}`,color:C.gold,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>Revisar</button>;
+                            return <span style={{color:C.muted,fontSize:11,whiteSpace:"nowrap"}}>espera a Anita</span>;
+                          })()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1744,9 +1774,9 @@ function Conciliacion({db}){
                 style={{background:C.card,color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 20px",fontSize:13,cursor:"pointer"}}>
                 Cancelar
               </button>
-              <button onClick={confirmarConciliacion}
+              <button onClick={confirmarRevision}
                 style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"9px 20px",fontSize:13,fontWeight:800,cursor:"pointer"}}>
-                ✅ Conciliar y registrar
+                ✓ Guardar revisión (Anita)
               </button>
             </div>
           </div>
