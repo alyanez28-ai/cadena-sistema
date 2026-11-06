@@ -1170,6 +1170,10 @@ function Conciliacion({db}){
   const [socioConciliar,setSocioConciliar]=useState("");
   const [rol,setRol]=useState("Anita Malán · Gte. Crédito");
   const esAnita=rol.includes("Anita"), esMartha=rol.includes("Martha");
+  const [repartoOn,setRepartoOn]=useState(false);
+  const [reparto,setReparto]=useState([]);     // [{socio_id,destino,monto}]
+  const [voucher,setVoucher]=useState("");
+  const [aporteCap,setAporteCap]=useState(10);  // cuánto del ingreso va a certificado
 
   const CUENTAS_MAP={
     "1103.01":"Pichincha Flexible — Gemma Yánez",
@@ -1209,9 +1213,21 @@ function Conciliacion({db}){
         {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
         {cuenta:"2101",nombre_cuenta:"Depósitos a la vista — ahorros",debe:0,haber:monto},
       ];
+    } else if(tipo==="reparto"){
+      const {data:rp}=await db.from("conciliacion_reparto").select("*").eq("movimiento_id",mov.id);
+      if(!rp||!rp.length) throw new Error("Sin filas de reparto para este movimiento");
+      concepto=`Depósito repartido — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[{cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0}];
+      rp.forEach(r=>{
+        const soc=socios.find(s=>s.id===r.socio_id);
+        const esCap=r.cuenta_destino==="3103";
+        partidas.push({cuenta:esCap?"3103":"2101",nombre_cuenta:esCap?"Aportes de socios — certificados":"Depósitos a la vista — ahorros",debe:0,haber:parseFloat(r.monto),descripcion:(soc?soc.nombre:"")+(esCap?" · certificado":" · ahorro")});
+      });
     } else if(tipo==="aporte"&&esCredito){
-      // Regla de ingreso: mitad certificado de aportación, mitad ahorro (ej. $20 → 10 + 10)
-      const cap=parseFloat((monto/2).toFixed(2)), aho=parseFloat((monto-cap).toFixed(2));
+      // Regla de ingreso: lo definido en revisión va a certificado (3103), el resto a ahorro (2101)
+      const mcap=(mov.nota||"").match(/cap:([\d.]+)/);
+      const cap=mcap?parseFloat(mcap[1]):parseFloat((monto/2).toFixed(2));
+      const aho=parseFloat((monto-cap).toFixed(2));
       concepto=`Ingreso socio — certificado + ahorro — ${mov.descripcion?.slice(0,35)}`;
       partidas=[
         {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
@@ -1310,12 +1326,34 @@ function Conciliacion({db}){
     let sug=parseFloat(mov.monto)<0?"comision":"ahorro";
     if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")) sug="interes_banco";
     setModalConciliar(mov);
-    setTipoConciliar(mov.tipo_mov||sug);
+    setTipoConciliar(mov.tipo_mov==="reparto"?"ahorro":(mov.tipo_mov||sug));
     setSocioConciliar(mov.socio_id||"");
+    setRepartoOn(mov.tipo_mov==="reparto");
+    setReparto(mov.tipo_mov==="reparto"?[]:[]);
+    setVoucher(mov.respaldo_url||"");
+    setAporteCap(10);
   };
   const confirmarRevision=async()=>{
     if(!modalConciliar) return;
+    const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+    // Reparto entre varios socios (voucher)
+    if(repartoOn){
+      const filas=reparto.filter(r=>r.socio_id&&parseFloat(r.monto)>0);
+      const suma=filas.reduce((a,r)=>a+parseFloat(r.monto),0);
+      if(!filas.length){ alert("Agrega al menos un socio al reparto."); return; }
+      if(Math.abs(tot-suma)>0.01){ alert(`El reparto ($${suma.toFixed(2)}) no cuadra con el depósito ($${tot.toFixed(2)}).`); return; }
+      await db.from("conciliacion_reparto").delete().eq("movimiento_id",modalConciliar.id);
+      const {error:er}=await db.from("conciliacion_reparto").insert(filas.map(r=>({movimiento_id:modalConciliar.id,socio_id:r.socio_id,cuenta_destino:r.destino==="capital"?"3103":"2101",monto:parseFloat(r.monto),concepto:r.destino})));
+      if(er){ alert("❌ reparto: "+er.message); return; }
+      const patch={estado:"revisado",tipo_mov:"reparto",revisado_por:rol,revisado_at:new Date().toISOString(),respaldo_url:voucher||null};
+      const {error}=await db.from("movimientos_banco").update(patch).eq("id",modalConciliar.id);
+      if(error){ alert("❌ "+error.message); return; }
+      setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,...patch}:m));
+      setModalConciliar(null); return;
+    }
+    // Normal / aporte
     const patch={estado:"revisado",tipo_mov:tipoConciliar,socio_id:socioConciliar||null,revisado_por:rol,revisado_at:new Date().toISOString()};
+    if(tipoConciliar==="aporte"){ patch.nota=`cap:${aporteCap}`; if(voucher) patch.respaldo_url=voucher; }
     const {error}=await db.from("movimientos_banco").update(patch).eq("id",modalConciliar.id);
     if(error){ alert("❌ "+error.message); return; }
     setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,...patch}:m));
@@ -1756,9 +1794,9 @@ function Conciliacion({db}){
                 </button>
               ))}
             </div>
-            {(tipoConciliar==="cuota"||tipoConciliar==="desembolso")&&(
+            {(tipoConciliar==="cuota"||tipoConciliar==="desembolso"||tipoConciliar==="aporte")&&!repartoOn&&(
               <div style={{marginBottom:16}}>
-                <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Selecciona el socio del crédito:</div>
+                <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Selecciona el socio:</div>
                 <select value={socioConciliar} onChange={e=>setSocioConciliar(e.target.value)}
                   style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}>
                   <option value="">— Seleccionar socio —</option>
@@ -1767,6 +1805,65 @@ function Conciliacion({db}){
                   ))}
                 </select>
                 {tipoConciliar==="cuota"&&<div style={{color:C.muted,fontSize:10,marginTop:4}}>El interés y capital salen exactos de su plan de pagos.</div>}
+              </div>
+            )}
+            {tipoConciliar==="aporte"&&!repartoOn&&(()=>{
+              const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+              const aho=parseFloat((tot-aporteCap).toFixed(2));
+              return <div style={{marginBottom:16,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:12}}>
+                <div style={{color:C.muted,fontSize:11,marginBottom:6}}>Regla de ingreso — ¿cuánto va a certificado de aportación?</div>
+                <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                  <label style={{color:C.white,fontSize:12}}>Certificado (3103): $
+                    <input type="number" value={aporteCap} min="0" max={tot} step="0.01"
+                      onChange={e=>setAporteCap(Math.min(tot,Math.max(0,parseFloat(e.target.value)||0)))}
+                      style={{width:70,marginLeft:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 6px",color:C.white,fontSize:12}}/>
+                  </label>
+                  <span style={{color:C.green,fontSize:12,fontWeight:700}}>→ Ahorro (2101): ${aho.toFixed(2)}</span>
+                </div>
+                <div style={{color:C.muted,fontSize:10,marginTop:6}}>Por defecto $10 a certificado y el resto a ahorro.</div>
+              </div>;
+            })()}
+            {parseFloat(modalConciliar.monto)>0&&(
+              <div style={{marginBottom:16}}>
+                <label style={{display:"flex",alignItems:"center",gap:8,color:C.white,fontSize:13,cursor:"pointer"}}>
+                  <input type="checkbox" checked={repartoOn} onChange={e=>{setRepartoOn(e.target.checked); if(e.target.checked&&reparto.length===0) setReparto([{socio_id:"",destino:"ahorro",monto:""}]);}}/>
+                  💱 Repartir este depósito entre varios socios (voucher)
+                </label>
+                {repartoOn&&(()=>{
+                  const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+                  const suma=reparto.reduce((a,r)=>a+(parseFloat(r.monto)||0),0);
+                  const dif=parseFloat((tot-suma).toFixed(2));
+                  return <div style={{marginTop:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:12}}>
+                    {reparto.map((r,i)=>(
+                      <div key={i} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
+                        <select value={r.socio_id} onChange={e=>{const c=[...reparto];c[i].socio_id=e.target.value;setReparto(c);}}
+                          style={{flex:"1 1 140px",background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}>
+                          <option value="">— socio —</option>
+                          {socios.map(s=><option key={s.id} value={s.id}>{s.nombre}</option>)}
+                        </select>
+                        <select value={r.destino} onChange={e=>{const c=[...reparto];c[i].destino=e.target.value;setReparto(c);}}
+                          style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}>
+                          <option value="ahorro">Ahorro</option><option value="capital">Certificado</option>
+                        </select>
+                        <input type="number" placeholder="$" value={r.monto} step="0.01"
+                          onChange={e=>{const c=[...reparto];c[i].monto=e.target.value;setReparto(c);}}
+                          style={{width:70,background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}/>
+                        <button onClick={()=>setReparto(reparto.filter((_,j)=>j!==i))} style={{background:"transparent",border:`1px solid ${C.red}`,color:C.red,borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button>
+                      </div>
+                    ))}
+                    <button onClick={()=>setReparto([...reparto,{socio_id:"",destino:"ahorro",monto:""}])} style={{background:"transparent",border:`1px dashed ${C.muted}`,color:C.muted,borderRadius:6,padding:"5px 10px",fontSize:12,cursor:"pointer"}}>+ Agregar socio</button>
+                    <div style={{marginTop:8,fontSize:12,fontWeight:700,color:Math.abs(dif)<0.01?C.green:C.red}}>
+                      Repartido: ${suma.toFixed(2)} de ${tot.toFixed(2)} {Math.abs(dif)<0.01?"✓ cuadra":`· faltan $${dif.toFixed(2)}`}
+                    </div>
+                  </div>;
+                })()}
+              </div>
+            )}
+            {(repartoOn||tipoConciliar==="aporte")&&(
+              <div style={{marginBottom:16}}>
+                <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Voucher / comprobante (opcional)</div>
+                <input type="text" value={voucher} onChange={e=>setVoucher(e.target.value)} placeholder="Link o referencia del voucher de WhatsApp"
+                  style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:12}}/>
               </div>
             )}
             <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
