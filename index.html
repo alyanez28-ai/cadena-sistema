@@ -1325,6 +1325,20 @@ function Conciliacion({db}){
         {cuenta:"2590",nombre_cuenta:"Valores por devolver",debe:monto,haber:0,descripcion:"Devolución"},
         {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
       ];
+    } else if(tipo==="cargo_error"&&!esCredito){
+      // Salió plata por error (cargo tarjeta / cuenta equivocada) que será repuesta → cuenta por cobrar
+      concepto=`Cargo por error (a reponer) — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:"1691",nombre_cuenta:"Valores por recuperar",debe:monto,haber:0,descripcion:"Cargo por error"},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
+      ];
+    } else if(tipo==="reposicion"&&esCredito){
+      // Reponen la plata que salió por error → limpia la cuenta por cobrar. Neto = 0.
+      concepto=`Reposición de cargo por error — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"1691",nombre_cuenta:"Valores por recuperar",debe:0,haber:monto,descripcion:"Reposición"},
+      ];
     } else { return; }
 
     // Cuadre defensivo antes de postear
@@ -1820,12 +1834,14 @@ function Conciliacion({db}){
                 {id:"captacion",  label:"🏦 Captación a plazo (inversión)",      color:C.blue},
                 {id:"interes_banco",label:"📈 Interés acreditado por el banco",   color:C.purple},
                 {id:"deposito_error",label:"↩️ Depósito por error (a devolver)",   color:C.yellow},
+                {id:"reposicion",   label:"↪️ Reposición de un cargo por error",    color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]:[
                 {id:"desembolso",       label:"💸 Desembolso de crédito a socio",       color:C.red},
                 {id:"retiro",           label:"🏧 Retiro de ahorro de socio",           color:C.yellow},
                 {id:"comision",         label:"🏦 Comisión / IVA bancario",             color:C.yellow},
                 {id:"devolucion",       label:"↩️ Devolución de depósito por error",    color:C.yellow},
+                {id:"cargo_error",      label:"↪️ Cargo por error (tarjeta/cuenta, a reponer)", color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]).map(t=>(
                 <button key={t.id} onClick={()=>setTipoConciliar(t.id)}
