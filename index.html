@@ -1405,7 +1405,7 @@ function Conciliacion({db}){
   const norm=s=>(s||"").toString().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();
   const OWNERS=["YANEZ HERAS GEMMA","HERAS SEGARRA ROSA NARCISA"];
   const autoClasificar=async()=>{
-    let nInt=0,nInterno=0,nMatch=0,nAmb=0;
+    let nInt=0,nInterno=0,nMatch=0,nAmb=0,nErr=0;
     const pend=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado));
     for(const mov of pend){
       const d=norm(mov.descripcion);
@@ -1439,10 +1439,24 @@ function Conciliacion({db}){
           tipo=(pr&&pr.some(p=>Math.abs(parseFloat(p.monto_entregado)-monto)<1))?"desembolso":"retiro";
         }
         await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:tipo,socio_id:best.id,revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
-        nMatch++;
-      } else if(tie) nAmb++;
+        nMatch++; continue;
+      }
+      if(tie){ nAmb++; continue; }
+      // 4) detector error+devolución: externo (no socio) con gemelo opuesto del mismo nombre en cualquier cuenta
+      const cpm=d.match(/(?:DIRECTA|INTERBANCARIA)\s+(?:DE|A)\s+(.+)$/);
+      if(cpm){
+        const key=cpm[1].split(" ").slice(0,2).join(" ");
+        if(key.length>=4){
+          const {data:twin}=await db.from("movimientos_banco").select("id").eq("monto",-parseFloat(mov.monto)).ilike("descripcion","%"+key+"%").neq("id",mov.id).limit(1);
+          if(twin&&twin.length){
+            const tp=parseFloat(mov.monto)>0?"deposito_error":"devolucion";
+            await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:tp,revisado_por:"Auto · detector error",revisado_at:new Date().toISOString()}).eq("id",mov.id);
+            nErr++; continue;
+          }
+        }
+      }
     }
-    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nAmb} ambiguos → revisión manual\n\nTodos quedan como propuesta: puedes abrirlos y corregir el socio/tipo antes de que Martha apruebe.`);
+    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nErr} depósitos por error / devoluciones (detectados)\n• ${nAmb} ambiguos → revisión manual\n\nTodos quedan como propuesta: puedes abrirlos y corregir antes de que Martha apruebe.`);
     cargarMovimientos(sel.id);
   };
   // MARTHA → aprueba todos los 'revisado' de golpe
