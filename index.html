@@ -1373,23 +1373,48 @@ function Conciliacion({db}){
     await db.from("movimientos_banco").update(patch).eq("id",mov.id);
     setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,...patch}:m));
   };
-  // ANITA → auto-clasifica (deja en 'revisado', nunca contabiliza)
+  // ANITA → auto-clasifica (deja en 'revisado', nunca contabiliza). Empareja por NOMBRE (Pichincha no trae cédula).
+  const norm=s=>(s||"").toString().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();
+  const OWNERS=["YANEZ HERAS GEMMA","HERAS SEGARRA ROSA NARCISA"];
   const autoClasificar=async()=>{
-    let nInt=0,nCed=0;
+    let nInt=0,nInterno=0,nMatch=0,nAmb=0;
     const pend=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado));
     for(const mov of pend){
-      const desc=(mov.descripcion||"").toUpperCase();
-      if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")){
+      const d=norm(mov.descripcion);
+      // 1) interés bancario
+      if(d.includes("INTERES A SU FAVOR")||d.includes("INTERES ACREDITADO")){
         await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"interes_banco",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
         nInt++; continue;
       }
-      const socio=socios.find(s=>s.cedula&&mov.descripcion?.includes(s.cedula));
-      if(socio){
-        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:(parseFloat(mov.monto)>0?"cuota":"desembolso"),socio_id:socio.id,revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
-        nCed++;
+      // 2) traspaso interno (contraparte = dueña de cuenta CADENA)
+      if(OWNERS.some(o=>d.includes(norm(o)))){
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"transferencia_interna",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nInterno++; continue;
       }
+      // 3) match por nombre (>=2 tokens, sin empate)
+      let best=null,bestScore=0,tie=false;
+      for(const s of socios){
+        const toks=norm(s.nombre).split(" ").filter(t=>t.length>=3);
+        if(!toks.length) continue;
+        const score=toks.filter(t=>d.includes(t)).length;
+        if(score>bestScore){bestScore=score;best=s;tie=false;}
+        else if(score===bestScore&&score>0){tie=true;}
+      }
+      if(best&&bestScore>=2&&!tie){
+        const monto=Math.abs(parseFloat(mov.monto)||0);
+        let tipo;
+        if(parseFloat(mov.monto)>0){
+          const {data:cu}=await db.from("plan_pagos").select("monto_cuota").eq("socio_id",best.id).neq("estado","pagado").limit(6);
+          tipo=(cu&&cu.some(c=>Math.abs(parseFloat(c.monto_cuota)-monto)<0.5))?"cuota":"ahorro";
+        } else {
+          const {data:pr}=await db.from("prestamos").select("monto_entregado").eq("socio_id",best.id).eq("estado","por_conciliar").limit(3);
+          tipo=(pr&&pr.some(p=>Math.abs(parseFloat(p.monto_entregado)-monto)<1))?"desembolso":"retiro";
+        }
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:tipo,socio_id:best.id,revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nMatch++;
+      } else if(tie) nAmb++;
     }
-    alert(`✅ Auto-clasificados: ${nInt} intereses + ${nCed} por cédula = ${nInt+nCed}. Quedan en 'revisado' para que Martha apruebe.`);
+    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nAmb} ambiguos → revisión manual\n\nTodos quedan como propuesta: puedes abrirlos y corregir el socio/tipo antes de que Martha apruebe.`);
     cargarMovimientos(sel.id);
   };
   // MARTHA → aprueba todos los 'revisado' de golpe
