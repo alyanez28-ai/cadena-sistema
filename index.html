@@ -1663,7 +1663,9 @@ function Conciliacion({db}){
                               if(esMartha) return <div style={{display:"flex",gap:6}}>
                                 <button onClick={()=>aprobarMov(m)} style={{background:C.green,border:"none",color:"#000",borderRadius:6,padding:"4px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>Aprobar</button>
                                 <button onClick={()=>rechazarMov(m)} style={{background:"transparent",border:`1px solid ${C.red}`,color:C.red,borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button></div>;
-                              return <span onClick={()=>revisarMov(m)} style={{color:C.blue,fontSize:11,cursor:"pointer",whiteSpace:"nowrap"}} title="Re-revisar">revisado ✎ espera Martha</span>;
+                              return <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.blue}`,color:C.blue,borderRadius:6,padding:"4px 10px",fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>✎ Corregir</button>
+                                <span style={{color:C.muted,fontSize:10}}>espera Martha</span></div>;
                             }
                             if(e==="rechazado") return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.muted}`,color:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>Reabrir</button>;
                             if(esAnita) return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.gold}`,color:C.gold,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>Revisar</button>;
