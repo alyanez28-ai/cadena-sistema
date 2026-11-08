@@ -1168,6 +1168,12 @@ function Conciliacion({db}){
   const [modalConciliar,setModalConciliar]=useState(null);
   const [tipoConciliar,setTipoConciliar]=useState("ahorro");
   const [socioConciliar,setSocioConciliar]=useState("");
+  const [rol,setRol]=useState("Anita Malán · Gte. Crédito");
+  const esAnita=rol.includes("Anita"), esMartha=rol.includes("Martha");
+  const [repartoOn,setRepartoOn]=useState(false);
+  const [reparto,setReparto]=useState([]);     // [{socio_id,destino,monto}]
+  const [voucher,setVoucher]=useState("");
+  const [aporteCap,setAporteCap]=useState(10);  // cuánto del ingreso va a certificado
 
   const CUENTAS_MAP={
     "1103.01":"Pichincha Flexible — Gemma Yánez",
@@ -1176,152 +1182,299 @@ function Conciliacion({db}){
     "1103.04":"Pichincha Flexible — Narcisa Heras",
   };
 
+  // Inserta asiento como borrador → líneas → contabilizado (así pasa los candados de inmutabilidad)
+  const postAsiento=async({fecha,concepto,partidas,referencia})=>{
+    const {count}=await db.from("asientos").select("*",{count:"exact",head:true});
+    const numero="ASI-"+(((count||0)+1).toString().padStart(4,"0"));
+    const {data:a,error:ea}=await db.from("asientos").insert({
+      numero,fecha,concepto,tipo:"AUTOMATICO",origen:"CONCILIACION",
+      referencia,creado_por:"Conciliación",estado:"borrador"
+    }).select().single();
+    if(ea||!a) throw new Error("asiento: "+(ea?.message||"sin id"));
+    const {error:ed}=await db.from("asiento_detalle").insert(partidas.map(p=>({...p,asiento_id:a.id})));
+    if(ed) throw new Error("detalle: "+ed.message);
+    const {error:ec}=await db.from("asientos").update({estado:"contabilizado"}).eq("id",a.id);
+    if(ec) throw new Error("contabilizar: "+ec.message);
+    return a.id;
+  };
+
+  // Genera el asiento con los códigos CUC correctos e interés EXACTO del plan de pagos
   const generarAsientoContable=async(mov,tipo,socioId)=>{
     const monto=Math.abs(parseFloat(mov.monto)||0);
     const esCredito=parseFloat(mov.monto)>0;
-    const fecha=mov.fecha?.slice(0,10)||new Date().toISOString().slice(0,10);
-    const cuentaBanco=sel?.nombre?.includes("Gemma")?(sel?.nombre?.includes("Flex")?"1103.01":"1103.02"):(sel?.nombre?.includes("Flex")?"1103.04":"1103.03");
+    const fecha=(mov.fecha||"").slice(0,10)||new Date().toISOString().slice(0,10);
+    const cb=sel?.nombre?.includes("Gemma")?(sel?.nombre?.includes("Flex")?"1103.01":"1103.02"):(sel?.nombre?.includes("Flex")?"1103.04":"1103.03");
     const nomBanco=sel?.nombre||"Bancos";
-
-    let partidas=[];
-    let concepto="";
+    let partidas=[], concepto="";
 
     if(tipo==="ahorro"&&esCredito){
-      concepto=`Depósito ahorro — ${mov.descripcion?.slice(0,50)}`;
+      concepto=`Depósito ahorro — ${mov.descripcion?.slice(0,45)}`;
       partidas=[
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
         {cuenta:"2101",nombre_cuenta:"Depósitos a la vista — ahorros",debe:0,haber:monto},
       ];
-    } else if(tipo==="cuota"&&esCredito){
-      const socio=socios.find(s=>s.id===parseInt(socioConciliar));
-      const intCuota=socio?.cuota_mensual?parseFloat((socio.cuota_mensual*0.1).toFixed(2)):0;
-      const capCuota=parseFloat((monto-intCuota).toFixed(2));
-      concepto=`Pago cuota crédito — ${mov.descripcion?.slice(0,50)}`;
+    } else if(tipo==="reparto"){
+      const {data:rp}=await db.from("conciliacion_reparto").select("*").eq("movimiento_id",mov.id);
+      if(!rp||!rp.length) throw new Error("Sin filas de reparto para este movimiento");
+      concepto=`Depósito repartido — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[{cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0}];
+      rp.forEach(r=>{
+        const soc=socios.find(s=>s.id===r.socio_id);
+        const esCap=r.cuenta_destino==="3103";
+        partidas.push({cuenta:esCap?"3103":"2101",nombre_cuenta:esCap?"Aportes de socios — certificados":"Depósitos a la vista — ahorros",debe:0,haber:parseFloat(r.monto),descripcion:(soc?soc.nombre:"")+(esCap?" · certificado":" · ahorro")});
+      });
+    } else if(tipo==="aporte"&&esCredito){
+      // Regla de ingreso: lo definido en revisión va a certificado (3103), el resto a ahorro (2101)
+      const mcap=(mov.nota||"").match(/cap:([\d.]+)/);
+      const cap=mcap?parseFloat(mcap[1]):parseFloat((monto/2).toFixed(2));
+      const aho=parseFloat((monto-cap).toFixed(2));
+      concepto=`Ingreso socio — certificado + ahorro — ${mov.descripcion?.slice(0,35)}`;
       partidas=[
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
-        {cuenta:"1401",nombre_cuenta:"Cartera créditos por vencer",debe:0,haber:capCuota,descripcion:"Capital"},
-        {cuenta:"5101",nombre_cuenta:"Intereses ganados — cartera",debe:0,haber:intCuota,descripcion:"Interés"},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"3103",nombre_cuenta:"Aportes de socios — certificados",debe:0,haber:cap,descripcion:"Certificado aportación"},
+        {cuenta:"2101",nombre_cuenta:"Depósitos a la vista — ahorros",debe:0,haber:aho,descripcion:"Ahorro"},
       ];
-    } else if(tipo==="mora"&&esCredito){
-      concepto=`Cobro mora — ${mov.descripcion?.slice(0,50)}`;
+    } else if(tipo==="cuota"&&esCredito){
+      // Interés y capital EXACTOS de la próxima cuota pendiente del plan de pagos
+      const {data:cuo}=await db.from("plan_pagos").select("*").eq("socio_id",socioId)
+        .neq("estado","pagado").order("fecha_vence",{ascending:true}).limit(1);
+      const c=cuo&&cuo[0];
+      let capCuota, intCuota, excedente=0;
+      if(c){
+        intCuota=parseFloat(c.interes)||0; capCuota=parseFloat(c.capital)||0;
+        const cuotaVal=parseFloat(c.monto_cuota)||(capCuota+intCuota);
+        excedente=parseFloat((monto-cuotaVal).toFixed(2));
+      } else { intCuota=0; capCuota=monto; }
+      concepto=`Pago cuota crédito — ${mov.descripcion?.slice(0,40)}`;
       partidas=[
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
-        {cuenta:"5190",nombre_cuenta:"Mora cobrada",debe:0,haber:monto},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"1404",nombre_cuenta:"Cartera microcrédito por vencer",debe:0,haber:capCuota,descripcion:"Capital"},
+        {cuenta:"5104",nombre_cuenta:"Intereses de cartera de créditos",debe:0,haber:intCuota,descripcion:"Interés"},
+      ];
+      if(excedente>0.005) partidas.push({cuenta:"2101",nombre_cuenta:"Depósitos a la vista — ahorros",debe:0,haber:excedente,descripcion:"Excedente → ahorro"});
+      // Marca la cuota pagada y baja el saldo del préstamo
+      if(c){
+        await db.from("plan_pagos").update({estado:"pagado",fecha_pago:fecha,monto_pagado:(capCuota+intCuota).toFixed(2)}).eq("id",c.id);
+        if(c.prestamo_id){
+          const {data:pr}=await db.from("prestamos").select("saldo_actual").eq("id",c.prestamo_id).single();
+          if(pr) await db.from("prestamos").update({saldo_actual:Math.max(0,(parseFloat(pr.saldo_actual)||0)-capCuota).toFixed(2)}).eq("id",c.prestamo_id);
+        }
+      }
+    } else if(tipo==="mora"&&esCredito){
+      concepto=`Cobro mora — ${mov.descripcion?.slice(0,45)}`;
+      partidas=[
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"569010",nombre_cuenta:"Cobranzas e intereses de mora",debe:0,haber:monto},
       ];
     } else if(tipo==="interes_banco"&&esCredito){
-      concepto=`Interés acreditado banco — ${mov.descripcion?.slice(0,50)}`;
+      concepto=`Interés acreditado banco — ${mov.descripcion?.slice(0,40)}`;
       partidas=[
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
-        {cuenta:"5201",nombre_cuenta:"Intereses ganados — bancos",debe:0,haber:monto},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"5101",nombre_cuenta:"Depósitos — intereses bancarios",debe:0,haber:monto},
+      ];
+    } else if(tipo==="captacion"&&esCredito){
+      concepto=`Captación a plazo — ${mov.descripcion?.slice(0,40)}`;
+      partidas=[
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"2105",nombre_cuenta:"Depósitos a plazo",debe:0,haber:monto},
       ];
     } else if(tipo==="transferencia_interna"){
-      // Determinar cuenta destino (la otra cuenta del mismo titular)
-      const esGemma=cuentaBanco==="1103.01"||cuentaBanco==="1103.02";
-      const esCredito2=parseFloat(mov.monto)>0;
-      // Si entra dinero: viene de la cuenta ahorros → flex (o viceversa)
-      const cuentaOrigen = esGemma
-        ? (cuentaBanco==="1103.01"?"1103.02":"1103.01")
-        : (cuentaBanco==="1103.04"?"1103.03":"1103.04");
-      const nomOrigen = CUENTAS_MAP[cuentaOrigen]||"Cuenta interna";
-      concepto=`Transferencia interna — ${mov.descripcion?.slice(0,50)}`;
-      partidas = esCredito2
-        ? [{cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:monto,haber:0},
-           {cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:0,haber:monto}]
-        : [{cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:monto,haber:0},
-           {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:0,haber:monto}];
-    } else if(tipo==="gasto_suscripcion"&&!esCredito){
-      concepto=`Gasto suscripción sistema — ${mov.descripcion?.slice(0,50)}`;
+      const esGemma=cb==="1103.01"||cb==="1103.02";
+      const cuentaOrigen=esGemma?(cb==="1103.01"?"1103.02":"1103.01"):(cb==="1103.04"?"1103.03":"1103.04");
+      const nomOrigen=CUENTAS_MAP[cuentaOrigen]||"Cuenta interna";
+      concepto=`Transferencia interna — ${mov.descripcion?.slice(0,40)}`;
+      partidas = esCredito
+        ? [{cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},{cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:0,haber:monto}]
+        : [{cuenta:cuentaOrigen,nombre_cuenta:nomOrigen,debe:monto,haber:0},{cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto}];
+    } else if(tipo==="comision"&&!esCredito){
+      concepto=`Comisión/IVA bancario — ${mov.descripcion?.slice(0,40)}`;
       partidas=[
-        {cuenta:"4505",nombre_cuenta:"Gastos operativos — suscripción",debe:monto,haber:0},
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:0,haber:monto},
+        {cuenta:"4290",nombre_cuenta:"Servicios y comisiones bancarias",debe:monto,haber:0},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
       ];
-    } else if(tipo==="gasto_config"&&!esCredito){
-      concepto=`Gasto configuración sistema — ${mov.descripcion?.slice(0,50)}`;
+    } else if(tipo==="retiro"&&!esCredito){
+      concepto=`Retiro de ahorro — ${mov.descripcion?.slice(0,45)}`;
       partidas=[
-        {cuenta:"4506",nombre_cuenta:"Gastos operativos — configuración",debe:monto,haber:0},
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:0,haber:monto},
+        {cuenta:"2101",nombre_cuenta:"Depósitos a la vista — ahorros",debe:monto,haber:0},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
       ];
     } else if(tipo==="desembolso"&&!esCredito){
-      concepto=`Desembolso crédito — ${mov.descripcion?.slice(0,50)}`;
+      // El banco entrega (monto − reserva); la cartera (1404) registra el capital completo; la reserva va a 3301
+      let reserva=0, prestamoId=null;
+      if(socioId){
+        const {data:pr}=await db.from("prestamos").select("id,reserva_legal,aplica_reserva").eq("socio_id",socioId).eq("estado","por_conciliar").order("fecha_desembolso",{ascending:true}).limit(1);
+        if(pr&&pr[0]){ prestamoId=pr[0].id; if(pr[0].aplica_reserva!==false) reserva=parseFloat(pr[0].reserva_legal)||0; }
+      }
+      const montoCartera=parseFloat((monto+reserva).toFixed(2));
+      concepto=`Desembolso crédito — ${mov.descripcion?.slice(0,40)}`;
+      partidas=[{cuenta:"1404",nombre_cuenta:"Cartera microcrédito por vencer",debe:montoCartera,haber:0},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto}];
+      if(reserva>0) partidas.push({cuenta:"3301",nombre_cuenta:"Fondo irrepartible de reserva legal",debe:0,haber:reserva,descripcion:"Reserva legal 3%"});
+      if(prestamoId) await db.from("prestamos").update({estado:"vigente"}).eq("id",prestamoId);
+    } else if(tipo==="deposito_error"&&esCredito){
+      // Dinero que entró por error → no es ahorro ni ingreso; queda en transitoria por devolver
+      concepto=`Depósito por error (por devolver) — ${mov.descripcion?.slice(0,35)}`;
       partidas=[
-        {cuenta:"1401",nombre_cuenta:"Cartera créditos por vencer",debe:monto,haber:0},
-        {cuenta:cuentaBanco,nombre_cuenta:nomBanco,debe:0,haber:monto},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"2590",nombre_cuenta:"Valores por devolver",debe:0,haber:monto,descripcion:"Depósito por error"},
       ];
-    } else {
-      return; // tipo no reconocido
-    }
+    } else if(tipo==="devolucion"&&!esCredito){
+      // Se devuelve el depósito por error → limpia la transitoria. Neto con el error = 0.
+      concepto=`Devolución de depósito por error — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:"2590",nombre_cuenta:"Valores por devolver",debe:monto,haber:0,descripcion:"Devolución"},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
+      ];
+    } else if(tipo==="cargo_error"&&!esCredito){
+      // Salió plata por error (cargo tarjeta / cuenta equivocada) que será repuesta → cuenta por cobrar
+      concepto=`Cargo por error (a reponer) — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:"1691",nombre_cuenta:"Valores por recuperar",debe:monto,haber:0,descripcion:"Cargo por error"},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
+      ];
+    } else if(tipo==="reposicion"&&esCredito){
+      // Reponen la plata que salió por error → limpia la cuenta por cobrar. Neto = 0.
+      concepto=`Reposición de cargo por error — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"1691",nombre_cuenta:"Valores por recuperar",debe:0,haber:monto,descripcion:"Reposición"},
+      ];
+    } else { return; }
 
-    // Obtener siguiente número de asiento
-    const {count}=await db.from("asientos").select("*",{count:"exact",head:true});
-    const num="ASI-"+(((count||0)+2).toString().padStart(3,"0"));
-
-    const {data:a}=await db.from("asientos").insert({
-      numero:num,fecha,concepto,tipo:"AUTOMATICO",origen:"CONCILIACION",
-      referencia:`MOV-${mov.id}`,creado_por:"Sistema"
-    }).select().single();
-
-    if(a){
-      await db.from("asiento_detalle").insert(partidas.map(p=>({...p,asiento_id:a.id})));
-    }
+    // Cuadre defensivo antes de postear
+    const td=partidas.reduce((a,p)=>a+(p.debe||0),0), th=partidas.reduce((a,p)=>a+(p.haber||0),0);
+    if(Math.abs(td-th)>0.01) throw new Error(`Asiento descuadrado: debe ${td.toFixed(2)} ≠ haber ${th.toFixed(2)}`);
+    return await postAsiento({fecha,concepto,partidas,referencia:`MOV-${mov.id}`});
   };
 
-  const toggleConciliar=async(mov)=>{
-    if(mov.conciliado){
-      // Desconciliar — solo actualiza estado
-      await db.from("movimientos_banco").update({conciliado:false}).eq("id",mov.id);
-      setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,conciliado:false}:m));
-      return;
-    }
-    // Auto-detectar interés bancario
+  // ── ETAPA 2: DOBLE FIRMA ──
+  // ANITA (Gte. Crédito) → revisa y clasifica. NO contabiliza.
+  const revisarMov=(mov)=>{
     const desc=(mov.descripcion||"").toUpperCase();
-    if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")){
-      await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
-      await generarAsientoContable(mov,"interes_banco");
-      setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,conciliado:true}:m));
-      return;
-    }
-    // Para los demás, abrir modal de clasificación
+    let sug=parseFloat(mov.monto)<0?"comision":"ahorro";
+    if(desc.includes("INTERES A SU FAVOR")||desc.includes("INTERÉS ACREDITADO")||desc.includes("INTERES ACREDITADO")) sug="interes_banco";
     setModalConciliar(mov);
-    setTipoConciliar(parseFloat(mov.monto)<0?"gasto_suscripcion":"ahorro");
-    setSocioConciliar("");
+    setTipoConciliar(mov.tipo_mov==="reparto"?"ahorro":(mov.tipo_mov||sug));
+    setSocioConciliar(mov.socio_id||"");
+    setRepartoOn(mov.tipo_mov==="reparto");
+    setReparto(mov.tipo_mov==="reparto"?[]:[]);
+    setVoucher(mov.respaldo_url||"");
+    setAporteCap(10);
   };
-
-  const confirmarConciliacion=async()=>{
+  const confirmarRevision=async()=>{
     if(!modalConciliar) return;
-    await db.from("movimientos_banco").update({conciliado:true}).eq("id",modalConciliar.id);
-    await generarAsientoContable(modalConciliar,tipoConciliar,socioConciliar);
-    setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,conciliado:true}:m));
+    const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+    // Reparto entre varios socios (voucher)
+    if(repartoOn){
+      const filas=reparto.filter(r=>r.socio_id&&parseFloat(r.monto)>0);
+      const suma=filas.reduce((a,r)=>a+parseFloat(r.monto),0);
+      if(!filas.length){ alert("Agrega al menos un socio al reparto."); return; }
+      if(Math.abs(tot-suma)>0.01){ alert(`El reparto ($${suma.toFixed(2)}) no cuadra con el depósito ($${tot.toFixed(2)}).`); return; }
+      await db.from("conciliacion_reparto").delete().eq("movimiento_id",modalConciliar.id);
+      const {error:er}=await db.from("conciliacion_reparto").insert(filas.map(r=>({movimiento_id:modalConciliar.id,socio_id:r.socio_id,cuenta_destino:r.destino==="capital"?"3103":"2101",monto:parseFloat(r.monto),concepto:r.destino})));
+      if(er){ alert("❌ reparto: "+er.message); return; }
+      const patch={estado:"revisado",tipo_mov:"reparto",revisado_por:rol,revisado_at:new Date().toISOString(),respaldo_url:voucher||null};
+      const {error}=await db.from("movimientos_banco").update(patch).eq("id",modalConciliar.id);
+      if(error){ alert("❌ "+error.message); return; }
+      setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,...patch}:m));
+      setModalConciliar(null); return;
+    }
+    // Normal / aporte
+    const patch={estado:"revisado",tipo_mov:tipoConciliar,socio_id:socioConciliar||null,revisado_por:rol,revisado_at:new Date().toISOString()};
+    if(tipoConciliar==="aporte"){ patch.nota=`cap:${aporteCap}`; if(voucher) patch.respaldo_url=voucher; }
+    const {error}=await db.from("movimientos_banco").update(patch).eq("id",modalConciliar.id);
+    if(error){ alert("❌ "+error.message); return; }
+    setMovimientos(prev=>prev.map(m=>m.id===modalConciliar.id?{...m,...patch}:m));
     setModalConciliar(null);
   };
-
-  const autoConciliar=async()=>{
-    let countCedula=0, countInteres=0;
-    const pendientes=movimientos.filter(m=>!m.conciliado);
-
-    for(const mov of pendientes){
-      const desc=(mov.descripcion||"").toUpperCase();
-
-      // Auto-conciliar intereses bancarios — sin asiento manual, genera asiento automático
-      const esInteres=desc.includes("INTERES A SU FAVOR")||
-                      desc.includes("INTERÉS ACREDITADO")||
-                      desc.includes("INTERES ACREDITADO")||
-                      desc.includes("INTERES ACREDITADO EN SU CUENTA");
-      if(esInteres){
-        await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
-        await generarAsientoContable(mov,"interes_banco");
-        countInteres++;
-        continue;
+  // MARTHA (Contabilidad) → aprueba. AQUÍ se postea el asiento.
+  const aprobarMov=async(mov)=>{
+    try{
+      const aid=await generarAsientoContable(mov,mov.tipo_mov,mov.socio_id);
+      const patch={estado:"contabilizado",conciliado:true,aprobado_por:rol,aprobado_at:new Date().toISOString(),asiento_id:aid||null};
+      await db.from("movimientos_banco").update(patch).eq("id",mov.id);
+      setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,...patch}:m));
+    }catch(err){ alert("❌ No se pudo contabilizar: "+err.message); }
+  };
+  const rechazarMov=async(mov)=>{
+    const patch={estado:"rechazado",revisado_por:rol,revisado_at:new Date().toISOString()};
+    await db.from("movimientos_banco").update(patch).eq("id",mov.id);
+    setMovimientos(prev=>prev.map(m=>m.id===mov.id?{...m,...patch}:m));
+  };
+  // ANITA → auto-clasifica (deja en 'revisado', nunca contabiliza). Empareja por NOMBRE (Pichincha no trae cédula).
+  const norm=s=>(s||"").toString().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();
+  const OWNERS=["YANEZ HERAS GEMMA","HERAS SEGARRA ROSA NARCISA"];
+  const autoClasificar=async()=>{
+    let nInt=0,nInterno=0,nMatch=0,nAmb=0,nErr=0;
+    const pend=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado));
+    for(const mov of pend){
+      const d=norm(mov.descripcion);
+      // 1) interés bancario
+      if(d.includes("INTERES A SU FAVOR")||d.includes("INTERES ACREDITADO")){
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"interes_banco",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nInt++; continue;
       }
-
-      // Auto-conciliar por cédula del socio
-      const socio=socios.find(s=>mov.descripcion?.includes(s.cedula));
-      if(socio){
-        await db.from("movimientos_banco").update({conciliado:true}).eq("id",mov.id);
-        countCedula++;
+      // 2) traspaso interno (contraparte = dueña de cuenta CADENA)
+      if(OWNERS.some(o=>d.includes(norm(o)))){
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"transferencia_interna",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nInterno++; continue;
+      }
+      // 3) match por nombre de socio (socio → ahorro/cuota/retiro; si fue error, netea igual en su propia cuenta)
+      let best=null,bestScore=0,tie=false;
+      for(const s of socios){
+        const toks=norm(s.nombre).split(" ").filter(t=>t.length>=3);
+        if(!toks.length) continue;
+        const score=toks.filter(t=>d.includes(t)).length;
+        if(score>bestScore){bestScore=score;best=s;tie=false;}
+        else if(score===bestScore&&score>0){tie=true;}
+      }
+      if(best&&bestScore>=2&&!tie){
+        const monto=Math.abs(parseFloat(mov.monto)||0);
+        let tipo;
+        if(parseFloat(mov.monto)>0){
+          const {data:cu}=await db.from("plan_pagos").select("monto_cuota").eq("socio_id",best.id).neq("estado","pagado").limit(6);
+          tipo=(cu&&cu.some(c=>Math.abs(parseFloat(c.monto_cuota)-monto)<0.5))?"cuota":"ahorro";
+        } else {
+          const {data:pr}=await db.from("prestamos").select("monto_entregado").eq("socio_id",best.id).eq("estado","por_conciliar").limit(3);
+          tipo=(pr&&pr.some(p=>Math.abs(parseFloat(p.monto_entregado)-monto)<1))?"desembolso":"retiro";
+        }
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:tipo,socio_id:best.id,revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nMatch++; continue;
+      }
+      if(tie){ nAmb++; continue; }
+      // 4) detector error+devolución (solo externos sin socio): gemelo opuesto mismo nombre, ventana ±35 días
+      const cpm=d.match(/(?:DIRECTA|INTERBANCARIA)\s+(?:DE|A)\s+(.+)$/);
+      if(cpm){
+        const key=cpm[1].split(" ").slice(0,2).join(" ");
+        if(key.length>=4){
+          const f=new Date(mov.fecha+"T00:00:00"); const lo=new Date(f),hi=new Date(f); lo.setDate(lo.getDate()-35); hi.setDate(hi.getDate()+35);
+          const {data:twin}=await db.from("movimientos_banco").select("id")
+            .eq("monto",-parseFloat(mov.monto)).ilike("descripcion","%"+key+"%")
+            .gte("fecha",lo.toISOString().slice(0,10)).lte("fecha",hi.toISOString().slice(0,10))
+            .neq("id",mov.id).limit(1);
+          if(twin&&twin.length){
+            const tp=parseFloat(mov.monto)>0?"deposito_error":"devolucion";
+            await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:tp,revisado_por:"Auto · detector error",revisado_at:new Date().toISOString()}).eq("id",mov.id);
+            nErr++; continue;
+          }
+        }
       }
     }
-
-    alert(`✅ ${countInteres} intereses bancarios + ${countCedula} por cédula = ${countInteres+countCedula} conciliados automáticamente.`);
+    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nErr} depósitos por error / devoluciones (detectados)\n• ${nAmb} ambiguos → revisión manual\n\nTodos quedan como propuesta: puedes abrirlos y corregir antes de que Martha apruebe.`);
+    cargarMovimientos(sel.id);
+  };
+  // MARTHA → aprueba todos los 'revisado' de golpe
+  const aprobarTodos=async()=>{
+    const rev=movimientos.filter(m=>m.estado==="revisado");
+    if(!rev.length){ alert("No hay movimientos en estado 'revisado'."); return; }
+    if(!window.confirm(`¿Aprobar y contabilizar ${rev.length} movimientos revisados?`)) return;
+    let ok=0,fail=0;
+    for(const mov of rev){
+      try{ const aid=await generarAsientoContable(mov,mov.tipo_mov,mov.socio_id);
+        await db.from("movimientos_banco").update({estado:"contabilizado",conciliado:true,aprobado_por:rol,aprobado_at:new Date().toISOString(),asiento_id:aid||null}).eq("id",mov.id); ok++;
+      }catch(err){ fail++; }
+    }
+    alert(`✅ ${ok} contabilizados${fail?` · ⚠️ ${fail} con error`:""}.`);
     cargarMovimientos(sel.id);
   };
 
@@ -1384,6 +1537,9 @@ function Conciliacion({db}){
             const colConcepto=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="concepto");
             const colMonto=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="monto");
             const colSaldo=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="saldo");
+            const colDoc=headerRow.findIndex(c=>String(c||"").trim().toLowerCase().includes("documento"));
+            const colBenef=headerRow.findIndex(c=>String(c||"").trim().toLowerCase().includes("beneficiario"));
+            const parseMoney=v=>parseFloat(String(v||"").replace(/[$\s]/g,"").replace(/\.(?=\d{3})/g,"").replace(",","."));
             const dataRows=[];
             for(let i=headerRowIdx+1;i<arr.length;i++){
               const row=arr[i];
@@ -1391,13 +1547,14 @@ function Conciliacion({db}){
               if(!fechaRaw.match(/^\d{4}-\d{1,2}-\d{1,2}/)) continue;
               const concepto=String(row[colConcepto]||"").trim();
               if(!concepto) continue;
-              // Parsear monto en formato español: $2,08 → 2.08 | -$3.470,00 → -3470.00
-              const montoRaw=String(row[colMonto]||"").trim();
-              const montoNum=parseFloat(
-                montoRaw.replace(/[$\s]/g,"").replace(/\.(?=\d{3})/g,"").replace(",",".")
-              )||0;
+              const montoNum=parseMoney(row[colMonto])||0;
               if(montoNum===0) continue;
-              dataRows.push({Fecha:fechaRaw,Concepto:concepto,Monto:montoNum.toString()});
+              const next=arr[i+1]||[];
+              const horaM=fechaRaw.match(/(\d{1,2}:\d{2}\s*[AP]M)/i);    // hora del depósito
+              const saldoNum=colSaldo>=0?parseMoney(row[colSaldo]):null; // saldo en cuenta
+              const doc=colDoc>=0?String(row[colDoc]||next[colDoc]||"").trim():"";
+              const benef=colBenef>=0?String(row[colBenef]||next[colBenef]||"").trim():"";
+              dataRows.push({Fecha:fechaRaw,Hora:horaM?horaM[1].toUpperCase().replace(/\s+/g,""):"",Concepto:concepto,Monto:montoNum.toString(),Saldo:(saldoNum!=null&&!isNaN(saldoNum))?saldoNum.toString():"",Documento:doc,Beneficiario:benef});
             }
             hdrs=["Fecha","Concepto","Monto"];
             rows=dataRows;
@@ -1437,7 +1594,9 @@ function Conciliacion({db}){
       const montoRaw=String(r[mapCols.monto]||"0").replace(/[$,\s]/g,"");
       const monto=parseFloat(montoRaw)||0;
       const fechaNorm=normalizarFecha(r[mapCols.fecha]);
-      return{cuenta_id:sel.id,fecha:fechaNorm,descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,conciliado:false};
+      return{cuenta_id:sel.id,fecha:fechaNorm,hora:r.Hora||null,descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,
+        saldo_banco:(r.Saldo!==undefined&&r.Saldo!=="")?parseFloat(r.Saldo):null,
+        nro_documento:r.Documento||null,beneficiario:r.Beneficiario||null,conciliado:false,estado:"propuesto"};
     }).filter(r=>r.monto!==0);
 
     const {error:e}=await db.from("movimientos_banco").insert(nuevos);
@@ -1463,6 +1622,9 @@ function Conciliacion({db}){
 
   const diff=sel?(sel.saldo_banco-sel.saldo_sistema):0;
   const sinConc=movimientos.filter(m=>!m.conciliado).length;
+  const nProp=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado)).length;
+  const nRev=movimientos.filter(m=>m.estado==="revisado").length;
+  const nCont=movimientos.filter(m=>m.estado==="contabilizado"||m.conciliado).length;
 
   return(
     <div>
@@ -1472,10 +1634,22 @@ function Conciliacion({db}){
           <Buscador valor={buscar} onChange={setBuscar} placeholder="🔍 Buscar movimiento..."/>
           <p style={{color:C.muted,fontSize:13}}>4 cuentas bancarias · Cruce automático por cédula</p>
         </div>
-        <div style={{display:"flex",gap:8}}>
-          <button onClick={autoConciliar} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🤖 Auto-Conciliar</button>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"4px 6px"}}>
+            <span style={{color:C.muted,fontSize:11}}>Firmas:</span>
+            {["Anita Malán · Gte. Crédito","Martha Yánez · Contabilidad"].map(r=>(
+              <button key={r} onClick={()=>setRol(r)} style={{background:rol===r?C.gold:"transparent",color:rol===r?"#000":C.muted,border:"none",borderRadius:6,padding:"5px 10px",fontWeight:700,fontSize:11,cursor:"pointer"}}>{r.includes("Anita")?"Anita (Crédito)":"Martha (Contab.)"}</button>
+            ))}
+          </div>
+          {esAnita&&<button onClick={autoClasificar} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🤖 Auto-clasificar</button>}
+          {esMartha&&<button onClick={aprobarTodos} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>✓✓ Aprobar revisados ({nRev})</button>}
           <button onClick={()=>{setModalImport(true);setStep(1);}} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>📂 Importar</button>
         </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+        <span style={{background:`${C.yellow}18`,color:C.yellow,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Propuestos: {nProp}</span>
+        <span style={{background:`${C.blue}18`,color:C.blue,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Revisados: {nRev}</span>
+        <span style={{background:`${C.green}18`,color:C.green,borderRadius:6,padding:"4px 10px",fontSize:11,fontWeight:700}}>Contabilizados: {nCont}</span>
       </div>
 
       <div className="four-col" style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:20}}>
@@ -1525,15 +1699,30 @@ function Conciliacion({db}){
                     <tbody>
                       {movimientos.filter(m=>!buscar||m.descripcion?.toLowerCase().includes(buscar.toLowerCase())).map((m,i)=>(
                         <tr key={m.id} style={{borderBottom:`1px solid ${C.border}`,background:m.conciliado?"transparent":"rgba(251,191,36,0.04)"}}>
-                          <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}</td>
-                          <td style={{padding:"11px 14px",color:C.white,fontSize:13,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}</td>
+                          <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}{m.hora&&<div style={{fontSize:10,opacity:.65}}>{m.hora}</div>}</td>
+                          <td style={{padding:"11px 14px",color:C.white,fontSize:13,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}{m.saldo_banco!=null&&<div style={{fontSize:10,color:C.muted}}>saldo banco: ${Number(m.saldo_banco).toLocaleString("es-EC",{minimumFractionDigits:2})}{m.nro_documento?` · doc ${m.nro_documento}`:""}</div>}</td>
                           <td style={{padding:"11px 14px",fontSize:13,fontFamily:"'DM Mono',monospace",fontWeight:700,color:m.monto>0?C.green:C.red,whiteSpace:"nowrap"}}>{m.monto>0?"+":""}{fmt(Math.abs(m.monto))}</td>
-                          <td style={{padding:"11px 14px"}}><Badge color={m.conciliado?"green":"yellow"}>{m.conciliado?"Conciliado":"Pendiente"}</Badge></td>
-                          <td style={{padding:"11px 14px"}}>
-                            <button onClick={()=>toggleConciliar(m)} style={{background:"transparent",border:`1px solid ${m.conciliado?C.muted:C.gold}`,color:m.conciliado?C.muted:C.gold,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>
-                              {m.conciliado?"Desmarcar":"✓ Conciliar"}
-                            </button>
-                          </td>
+                          <td style={{padding:"11px 14px"}}>{(()=>{
+                            const e=m.estado||(m.conciliado?"contabilizado":"propuesto");
+                            const map={propuesto:["yellow","Propuesto"],revisado:["blue","Revisado"],contabilizado:["green","Contabilizado"],rechazado:["red","Rechazado"]};
+                            const[col,lab]=map[e]||["yellow","Propuesto"];
+                            return <Badge color={col}>{lab}</Badge>;
+                          })()}</td>
+                          <td style={{padding:"11px 14px"}}>{(()=>{
+                            const e=m.estado||(m.conciliado?"contabilizado":"propuesto");
+                            if(e==="contabilizado") return <span style={{color:C.muted,fontSize:11,whiteSpace:"nowrap"}} title={m.aprobado_por||""}>✓ {m.aprobado_por?m.aprobado_por.split("·")[0]:"OK"}</span>;
+                            if(e==="revisado"){
+                              if(esMartha) return <div style={{display:"flex",gap:6}}>
+                                <button onClick={()=>aprobarMov(m)} style={{background:C.green,border:"none",color:"#000",borderRadius:6,padding:"4px 10px",fontSize:12,cursor:"pointer",fontWeight:700}}>Aprobar</button>
+                                <button onClick={()=>rechazarMov(m)} style={{background:"transparent",border:`1px solid ${C.red}`,color:C.red,borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button></div>;
+                              return <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.blue}`,color:C.blue,borderRadius:6,padding:"4px 10px",fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>✎ Corregir</button>
+                                <span style={{color:C.muted,fontSize:10}}>espera Martha</span></div>;
+                            }
+                            if(e==="rechazado") return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.muted}`,color:C.muted,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer"}}>Reabrir</button>;
+                            if(esAnita) return <button onClick={()=>revisarMov(m)} style={{background:"transparent",border:`1px solid ${C.gold}`,color:C.gold,borderRadius:6,padding:"4px 12px",fontSize:12,cursor:"pointer",fontWeight:600,whiteSpace:"nowrap"}}>Revisar</button>;
+                            return <span style={{color:C.muted,fontSize:11,whiteSpace:"nowrap"}}>espera a Anita</span>;
+                          })()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1663,14 +1852,20 @@ function Conciliacion({db}){
             <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:16}}>
               {(parseFloat(modalConciliar.monto)>0?[
                 {id:"ahorro",     label:"💰 Depósito de ahorro de socio",       color:C.green},
+                {id:"aporte",     label:"🪙 Ingreso de socio (certificado + ahorro)", color:C.green},
                 {id:"cuota",      label:"💳 Pago de cuota de crédito",           color:C.blue},
                 {id:"mora",       label:"⚠️ Cobro de mora",                      color:C.red},
-                {id:"interes_banco",label:"🏦 Interés acreditado banco",         color:C.purple},
+                {id:"captacion",  label:"🏦 Captación a plazo (inversión)",      color:C.blue},
+                {id:"interes_banco",label:"📈 Interés acreditado por el banco",   color:C.purple},
+                {id:"deposito_error",label:"↩️ Depósito por error (a devolver)",   color:C.yellow},
+                {id:"reposicion",   label:"↪️ Reposición de un cargo por error",    color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]:[
-                {id:"gasto_suscripcion",label:"💻 Pago suscripción sistema ($60/mes)", color:C.yellow},
-                {id:"gasto_config",     label:"⚙️ Pago configuración sistema",          color:C.yellow},
                 {id:"desembolso",       label:"💸 Desembolso de crédito a socio",       color:C.red},
+                {id:"retiro",           label:"🏧 Retiro de ahorro de socio",           color:C.yellow},
+                {id:"comision",         label:"🏦 Comisión / IVA bancario",             color:C.yellow},
+                {id:"devolucion",       label:"↩️ Devolución de depósito por error",    color:C.yellow},
+                {id:"cargo_error",      label:"↪️ Cargo por error (tarjeta/cuenta, a reponer)", color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]).map(t=>(
                 <button key={t.id} onClick={()=>setTipoConciliar(t.id)}
@@ -1682,16 +1877,76 @@ function Conciliacion({db}){
                 </button>
               ))}
             </div>
-            {tipoConciliar==="cuota"&&(
+            {(tipoConciliar==="cuota"||tipoConciliar==="desembolso"||tipoConciliar==="aporte")&&!repartoOn&&(
               <div style={{marginBottom:16}}>
                 <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Selecciona el socio:</div>
                 <select value={socioConciliar} onChange={e=>setSocioConciliar(e.target.value)}
                   style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:13}}>
                   <option value="">— Seleccionar socio —</option>
-                  {socios.filter(s=>s.saldo_credito>0).map(s=>(
+                  {socios.map(s=>(
                     <option key={s.id} value={s.id}>{s.nombre}</option>
                   ))}
                 </select>
+                {tipoConciliar==="cuota"&&<div style={{color:C.muted,fontSize:10,marginTop:4}}>El interés y capital salen exactos de su plan de pagos.</div>}
+              </div>
+            )}
+            {tipoConciliar==="aporte"&&!repartoOn&&(()=>{
+              const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+              const aho=parseFloat((tot-aporteCap).toFixed(2));
+              return <div style={{marginBottom:16,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:12}}>
+                <div style={{color:C.muted,fontSize:11,marginBottom:6}}>Regla de ingreso — ¿cuánto va a certificado de aportación?</div>
+                <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+                  <label style={{color:C.white,fontSize:12}}>Certificado (3103): $
+                    <input type="number" value={aporteCap} min="0" max={tot} step="0.01"
+                      onChange={e=>setAporteCap(Math.min(tot,Math.max(0,parseFloat(e.target.value)||0)))}
+                      style={{width:70,marginLeft:4,background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 6px",color:C.white,fontSize:12}}/>
+                  </label>
+                  <span style={{color:C.green,fontSize:12,fontWeight:700}}>→ Ahorro (2101): ${aho.toFixed(2)}</span>
+                </div>
+                <div style={{color:C.muted,fontSize:10,marginTop:6}}>Por defecto $10 a certificado y el resto a ahorro.</div>
+              </div>;
+            })()}
+            {parseFloat(modalConciliar.monto)>0&&(
+              <div style={{marginBottom:16}}>
+                <label style={{display:"flex",alignItems:"center",gap:8,color:C.white,fontSize:13,cursor:"pointer"}}>
+                  <input type="checkbox" checked={repartoOn} onChange={e=>{setRepartoOn(e.target.checked); if(e.target.checked&&reparto.length===0) setReparto([{socio_id:"",destino:"ahorro",monto:""}]);}}/>
+                  💱 Repartir este depósito entre varios socios (voucher)
+                </label>
+                {repartoOn&&(()=>{
+                  const tot=Math.abs(parseFloat(modalConciliar.monto)||0);
+                  const suma=reparto.reduce((a,r)=>a+(parseFloat(r.monto)||0),0);
+                  const dif=parseFloat((tot-suma).toFixed(2));
+                  return <div style={{marginTop:10,background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:12}}>
+                    {reparto.map((r,i)=>(
+                      <div key={i} style={{display:"flex",gap:6,marginBottom:6,alignItems:"center",flexWrap:"wrap"}}>
+                        <select value={r.socio_id} onChange={e=>{const c=[...reparto];c[i].socio_id=e.target.value;setReparto(c);}}
+                          style={{flex:"1 1 140px",background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}>
+                          <option value="">— socio —</option>
+                          {socios.map(s=><option key={s.id} value={s.id}>{s.nombre}</option>)}
+                        </select>
+                        <select value={r.destino} onChange={e=>{const c=[...reparto];c[i].destino=e.target.value;setReparto(c);}}
+                          style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}>
+                          <option value="ahorro">Ahorro</option><option value="capital">Certificado</option>
+                        </select>
+                        <input type="number" placeholder="$" value={r.monto} step="0.01"
+                          onChange={e=>{const c=[...reparto];c[i].monto=e.target.value;setReparto(c);}}
+                          style={{width:70,background:C.card,border:`1px solid ${C.border}`,borderRadius:6,padding:"5px 8px",color:C.white,fontSize:12}}/>
+                        <button onClick={()=>setReparto(reparto.filter((_,j)=>j!==i))} style={{background:"transparent",border:`1px solid ${C.red}`,color:C.red,borderRadius:6,padding:"4px 8px",fontSize:12,cursor:"pointer"}}>✕</button>
+                      </div>
+                    ))}
+                    <button onClick={()=>setReparto([...reparto,{socio_id:"",destino:"ahorro",monto:""}])} style={{background:"transparent",border:`1px dashed ${C.muted}`,color:C.muted,borderRadius:6,padding:"5px 10px",fontSize:12,cursor:"pointer"}}>+ Agregar socio</button>
+                    <div style={{marginTop:8,fontSize:12,fontWeight:700,color:Math.abs(dif)<0.01?C.green:C.red}}>
+                      Repartido: ${suma.toFixed(2)} de ${tot.toFixed(2)} {Math.abs(dif)<0.01?"✓ cuadra":`· faltan $${dif.toFixed(2)}`}
+                    </div>
+                  </div>;
+                })()}
+              </div>
+            )}
+            {(repartoOn||tipoConciliar==="aporte")&&(
+              <div style={{marginBottom:16}}>
+                <div style={{color:C.muted,fontSize:11,marginBottom:4}}>Voucher / comprobante (opcional)</div>
+                <input type="text" value={voucher} onChange={e=>setVoucher(e.target.value)} placeholder="Link o referencia del voucher de WhatsApp"
+                  style={{width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 12px",color:C.white,fontSize:12}}/>
               </div>
             )}
             <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
@@ -1699,9 +1954,9 @@ function Conciliacion({db}){
                 style={{background:C.card,color:C.muted,border:`1px solid ${C.border}`,borderRadius:8,padding:"9px 20px",fontSize:13,cursor:"pointer"}}>
                 Cancelar
               </button>
-              <button onClick={confirmarConciliacion}
+              <button onClick={confirmarRevision}
                 style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"9px 20px",fontSize:13,fontWeight:800,cursor:"pointer"}}>
-                ✅ Conciliar y registrar
+                ✓ Guardar revisión (Anita)
               </button>
             </div>
           </div>
