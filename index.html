@@ -1537,6 +1537,9 @@ function Conciliacion({db}){
             const colConcepto=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="concepto");
             const colMonto=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="monto");
             const colSaldo=headerRow.findIndex(c=>String(c||"").trim().toLowerCase()==="saldo");
+            const colDoc=headerRow.findIndex(c=>String(c||"").trim().toLowerCase().includes("documento"));
+            const colBenef=headerRow.findIndex(c=>String(c||"").trim().toLowerCase().includes("beneficiario"));
+            const parseMoney=v=>parseFloat(String(v||"").replace(/[$\s]/g,"").replace(/\.(?=\d{3})/g,"").replace(",","."));
             const dataRows=[];
             for(let i=headerRowIdx+1;i<arr.length;i++){
               const row=arr[i];
@@ -1544,13 +1547,14 @@ function Conciliacion({db}){
               if(!fechaRaw.match(/^\d{4}-\d{1,2}-\d{1,2}/)) continue;
               const concepto=String(row[colConcepto]||"").trim();
               if(!concepto) continue;
-              // Parsear monto en formato español: $2,08 → 2.08 | -$3.470,00 → -3470.00
-              const montoRaw=String(row[colMonto]||"").trim();
-              const montoNum=parseFloat(
-                montoRaw.replace(/[$\s]/g,"").replace(/\.(?=\d{3})/g,"").replace(",",".")
-              )||0;
+              const montoNum=parseMoney(row[colMonto])||0;
               if(montoNum===0) continue;
-              dataRows.push({Fecha:fechaRaw,Concepto:concepto,Monto:montoNum.toString()});
+              const next=arr[i+1]||[];
+              const horaM=fechaRaw.match(/(\d{1,2}:\d{2}\s*[AP]M)/i);    // hora del depósito
+              const saldoNum=colSaldo>=0?parseMoney(row[colSaldo]):null; // saldo en cuenta
+              const doc=colDoc>=0?String(row[colDoc]||next[colDoc]||"").trim():"";
+              const benef=colBenef>=0?String(row[colBenef]||next[colBenef]||"").trim():"";
+              dataRows.push({Fecha:fechaRaw,Hora:horaM?horaM[1].toUpperCase().replace(/\s+/g,""):"",Concepto:concepto,Monto:montoNum.toString(),Saldo:(saldoNum!=null&&!isNaN(saldoNum))?saldoNum.toString():"",Documento:doc,Beneficiario:benef});
             }
             hdrs=["Fecha","Concepto","Monto"];
             rows=dataRows;
@@ -1590,7 +1594,9 @@ function Conciliacion({db}){
       const montoRaw=String(r[mapCols.monto]||"0").replace(/[$,\s]/g,"");
       const monto=parseFloat(montoRaw)||0;
       const fechaNorm=normalizarFecha(r[mapCols.fecha]);
-      return{cuenta_id:sel.id,fecha:fechaNorm,descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,conciliado:false,estado:"propuesto"};
+      return{cuenta_id:sel.id,fecha:fechaNorm,hora:r.Hora||null,descripcion:r[mapCols.descripcion]||"(sin descripción)",monto,
+        saldo_banco:(r.Saldo!==undefined&&r.Saldo!=="")?parseFloat(r.Saldo):null,
+        nro_documento:r.Documento||null,beneficiario:r.Beneficiario||null,conciliado:false,estado:"propuesto"};
     }).filter(r=>r.monto!==0);
 
     const {error:e}=await db.from("movimientos_banco").insert(nuevos);
@@ -1693,8 +1699,8 @@ function Conciliacion({db}){
                     <tbody>
                       {movimientos.filter(m=>!buscar||m.descripcion?.toLowerCase().includes(buscar.toLowerCase())).map((m,i)=>(
                         <tr key={m.id} style={{borderBottom:`1px solid ${C.border}`,background:m.conciliado?"transparent":"rgba(251,191,36,0.04)"}}>
-                          <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}</td>
-                          <td style={{padding:"11px 14px",color:C.white,fontSize:13,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}</td>
+                          <td style={{padding:"11px 14px",color:C.muted,fontSize:12,fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>{fmtDate(m.fecha)}{m.hora&&<div style={{fontSize:10,opacity:.65}}>{m.hora}</div>}</td>
+                          <td style={{padding:"11px 14px",color:C.white,fontSize:13,maxWidth:250,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.descripcion}{m.saldo_banco!=null&&<div style={{fontSize:10,color:C.muted}}>saldo banco: ${Number(m.saldo_banco).toLocaleString("es-EC",{minimumFractionDigits:2})}{m.nro_documento?` · doc ${m.nro_documento}`:""}</div>}</td>
                           <td style={{padding:"11px 14px",fontSize:13,fontFamily:"'DM Mono',monospace",fontWeight:700,color:m.monto>0?C.green:C.red,whiteSpace:"nowrap"}}>{m.monto>0?"+":""}{fmt(Math.abs(m.monto))}</td>
                           <td style={{padding:"11px 14px"}}>{(()=>{
                             const e=m.estado||(m.conciliado?"contabilizado":"propuesto");
