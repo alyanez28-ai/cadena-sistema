@@ -1405,7 +1405,7 @@ function Conciliacion({db}){
   const norm=s=>(s||"").toString().toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^A-Z0-9 ]/g," ").replace(/\s+/g," ").trim();
   const OWNERS=["YANEZ HERAS GEMMA","HERAS SEGARRA ROSA NARCISA"];
   const autoClasificar=async()=>{
-    let nInt=0,nInterno=0,nMatch=0,nAmb=0,nErr=0;
+    let nInt=0,nCom=0,nInterno=0,nMatch=0,nAmb=0,nErr=0;
     const pend=movimientos.filter(m=>m.estado==="propuesto"||(!m.estado&&!m.conciliado));
     for(const mov of pend){
       const d=norm(mov.descripcion);
@@ -1413,6 +1413,11 @@ function Conciliacion({db}){
       if(d.includes("INTERES A SU FAVOR")||d.includes("INTERES ACREDITADO")){
         await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"interes_banco",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
         nInt++; continue;
+      }
+      // 1b) comisiones / IVA / impuestos bancarios
+      if(parseFloat(mov.monto)<0&&(d.includes("COBRO DE IVA")||d.includes("COMISION")||d.includes("IMPUESTO")||d.includes("SERVICIOS BANCARIOS")||d.includes("ISD"))){
+        await db.from("movimientos_banco").update({estado:"revisado",tipo_mov:"comision",revisado_por:"Auto · "+rol,revisado_at:new Date().toISOString()}).eq("id",mov.id);
+        nCom++; continue;
       }
       // 2) traspaso interno (contraparte = dueña de cuenta CADENA)
       if(OWNERS.some(o=>d.includes(norm(o)))){
@@ -1460,7 +1465,7 @@ function Conciliacion({db}){
         }
       }
     }
-    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nErr} depósitos por error / devoluciones (detectados)\n• ${nAmb} ambiguos → revisión manual\n\nTodos quedan como propuesta: puedes abrirlos y corregir antes de que Martha apruebe.`);
+    alert(`✅ Auto-clasificados en 'revisado':\n• ${nInt} intereses\n• ${nCom} comisiones / IVA\n• ${nInterno} traspasos internos\n• ${nMatch} por nombre de socio\n• ${nErr} depósitos por error / devoluciones (detectados)\n• ${nAmb} ambiguos → revisión manual\n\nLo que NO reconoce queda en 'Propuesto' (sin revisar) para que lo clasifiques a mano.`);
     cargarMovimientos(sel.id);
   };
   // MARTHA → aprueba todos los 'revisado' de golpe
