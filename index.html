@@ -1482,6 +1482,18 @@ function Conciliacion({db}){
     alert(`✅ ${ok} contabilizados${fail?` · ⚠️ ${fail} con error`:""}.`);
     cargarMovimientos(sel.id);
   };
+  // Limpiar movimientos NO contabilizados de la cuenta (propuesto/revisado/rechazado). No toca los aprobados.
+  const limpiarSinContabilizar=async()=>{
+    if(!sel) return;
+    const ids=movimientos.filter(m=>m.estado!=="contabilizado"&&!m.conciliado).map(m=>m.id);
+    if(!ids.length){ alert("No hay movimientos sin contabilizar en esta cuenta."); return; }
+    if(!window.confirm(`¿Borrar ${ids.length} movimientos NO contabilizados de esta cuenta?\n(no toca los ya aprobados/contabilizados)`)) return;
+    await db.from("conciliacion_reparto").delete().in("movimiento_id",ids);
+    const {error}=await db.from("movimientos_banco").delete().in("id",ids);
+    if(error){ alert("❌ "+error.message); return; }
+    await cargarMovimientos(sel.id);
+    alert(`🗑️ ${ids.length} movimientos borrados.`);
+  };
 
   const parseCSV=(text)=>{
     const lines=text.trim().split(/\r?\n/).filter(l=>l.trim());
@@ -1651,6 +1663,7 @@ function Conciliacion({db}){
           {esAnita&&<button onClick={autoClasificar} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🤖 Auto-clasificar</button>}
           {esMartha&&<button onClick={aprobarTodos} style={{background:C.surface,color:C.green,border:`1px solid ${C.green}40`,borderRadius:8,padding:"10px 16px",fontWeight:700,fontSize:12,cursor:"pointer"}}>✓✓ Aprobar revisados ({nRev})</button>}
           <button onClick={()=>{setModalImport(true);setStep(1);}} style={{background:C.gold,color:"#000",border:"none",borderRadius:8,padding:"10px 18px",fontWeight:700,fontSize:13,cursor:"pointer"}}>📂 Importar</button>
+          <button onClick={limpiarSinContabilizar} style={{background:"transparent",color:C.red,border:`1px solid ${C.red}`,borderRadius:8,padding:"10px 14px",fontWeight:700,fontSize:12,cursor:"pointer"}}>🗑️ Limpiar</button>
         </div>
       </div>
       <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
