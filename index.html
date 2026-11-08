@@ -1599,13 +1599,15 @@ function Conciliacion({db}){
         nro_documento:r.Documento||null,beneficiario:r.Beneficiario||null,conciliado:false,estado:"propuesto"};
     }).filter(r=>r.monto!==0);
 
-    const {error:e}=await db.from("movimientos_banco").insert(nuevos);
-    if(e){setImportMsg("❌ Error: "+e.message);setImportando(false);return;}
-
-    let autoCont=0;
-    for(const mov of nuevos){
-      const socio=socios.find(s=>mov.descripcion.includes(s.cedula));
-      if(socio) autoCont++;
+    // Anti-duplicados: no reinsertar lo que ya existe en esta cuenta (por N° documento, o fecha+hora+monto+desc)
+    const {data:existentes}=await db.from("movimientos_banco").select("fecha,hora,monto,descripcion,nro_documento").eq("cuenta_id",sel.id);
+    const keyOf=m=>m.nro_documento?("D:"+m.nro_documento):("F:"+m.fecha+"|"+(m.hora||"")+"|"+Number(m.monto).toFixed(2)+"|"+(m.descripcion||"").slice(0,40));
+    const yaHay=new Set((existentes||[]).map(keyOf));
+    const aInsertar=nuevos.filter(n=>!yaHay.has(keyOf(n)));
+    const dup=nuevos.length-aInsertar.length;
+    if(aInsertar.length){
+      const {error:e}=await db.from("movimientos_banco").insert(aInsertar);
+      if(e){setImportMsg("❌ Error: "+e.message);setImportando(false);return;}
     }
 
     if(nuevoSaldo){
@@ -1614,7 +1616,7 @@ function Conciliacion({db}){
 
     setModalImport(false);setStep(1);setRawRows([]);setHeaders([]);setNuevoSaldo("");setImportMsg("");
     await cargarCuentas();await cargarMovimientos(sel.id);
-    alert(`✅ ${nuevos.length} movimientos importados.\n🤖 ${autoCont} pueden auto-conciliarse (tienen cédula en la descripción).`);
+    alert(`✅ ${aInsertar.length} movimientos importados.${dup?`\n⏭️ ${dup} ya existían (duplicados omitidos).`:""}`);
     setImportando(false);
   };
 
