@@ -1311,6 +1311,20 @@ function Conciliacion({db}){
         {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto}];
       if(reserva>0) partidas.push({cuenta:"3301",nombre_cuenta:"Fondo irrepartible de reserva legal",debe:0,haber:reserva,descripcion:"Reserva legal 3%"});
       if(prestamoId) await db.from("prestamos").update({estado:"vigente"}).eq("id",prestamoId);
+    } else if(tipo==="deposito_error"&&esCredito){
+      // Dinero que entró por error → no es ahorro ni ingreso; queda en transitoria por devolver
+      concepto=`Depósito por error (por devolver) — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:monto,haber:0},
+        {cuenta:"2590",nombre_cuenta:"Valores por devolver",debe:0,haber:monto,descripcion:"Depósito por error"},
+      ];
+    } else if(tipo==="devolucion"&&!esCredito){
+      // Se devuelve el depósito por error → limpia la transitoria. Neto con el error = 0.
+      concepto=`Devolución de depósito por error — ${mov.descripcion?.slice(0,35)}`;
+      partidas=[
+        {cuenta:"2590",nombre_cuenta:"Valores por devolver",debe:monto,haber:0,descripcion:"Devolución"},
+        {cuenta:cb,nombre_cuenta:nomBanco,debe:0,haber:monto},
+      ];
     } else { return; }
 
     // Cuadre defensivo antes de postear
@@ -1805,11 +1819,13 @@ function Conciliacion({db}){
                 {id:"mora",       label:"⚠️ Cobro de mora",                      color:C.red},
                 {id:"captacion",  label:"🏦 Captación a plazo (inversión)",      color:C.blue},
                 {id:"interes_banco",label:"📈 Interés acreditado por el banco",   color:C.purple},
+                {id:"deposito_error",label:"↩️ Depósito por error (a devolver)",   color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]:[
                 {id:"desembolso",       label:"💸 Desembolso de crédito a socio",       color:C.red},
                 {id:"retiro",           label:"🏧 Retiro de ahorro de socio",           color:C.yellow},
                 {id:"comision",         label:"🏦 Comisión / IVA bancario",             color:C.yellow},
+                {id:"devolucion",       label:"↩️ Devolución de depósito por error",    color:C.yellow},
                 {id:"transferencia_interna",label:"💱 Transferencia interna entre cuentas CADENA", color:C.muted},
               ]).map(t=>(
                 <button key={t.id} onClick={()=>setTipoConciliar(t.id)}
