@@ -738,7 +738,7 @@ function Transacciones({db,sesion}){
   const [tipo,setTipo]=useState("deposito");
   const [buscarSocio,setBuscarSocio]=useState("");
   const [verTabla,setVerTabla]=useState(false);
-  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13"});
+  const [form,setForm]=useState({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13",aplicaReserva:true});
 
   const f=(k,v)=>setForm(p=>({...p,[k]:v}));
 
@@ -756,9 +756,10 @@ function Transacciones({db,sesion}){
   const montoVal=+form.monto||0;
   const tasaAnual=+form.tasa||0.13;
   const calcCuotaLocal=(cap,meses)=>{if(meses===0)return 0;if(tasaAnual===0)return cap/meses;const intTotal=cap*tasaAnual*(meses/12);return (cap+intTotal)/meses;};
-  const reserva=tipo==="desembolso"?+(montoVal*RESERVA_PCT).toFixed(2):0;
+  const reserva=(tipo==="desembolso"&&form.aplicaReserva)?+(montoVal*RESERVA_PCT).toFixed(2):0;
   const montoNeto=tipo==="desembolso"?+(montoVal-reserva).toFixed(2):montoVal;
   const cuotaCalc=tipo==="desembolso"&&montoVal>0?+calcCuotaLocal(montoVal,plazo).toFixed(2):0;
+  const interesFlat=tipo==="desembolso"?+(montoVal*tasaAnual*(plazo/12)).toFixed(2):0;
 
   const calcTabla=(cap,meses)=>{
     const cuota=+calcCuotaLocal(cap,meses).toFixed(2);
@@ -833,9 +834,12 @@ function Transacciones({db,sesion}){
           tasa_anual:tasaAnual*100,
           plazo_meses:plazo,
           cuota_mensual:cuotaCalc,
+          interes_flat:interesFlat,
+          aplica_reserva:form.aplicaReserva,
+          origen:"directo",
           fecha_desembolso:form.fecha,
           fecha_primera_cuota:fechaPrimera,
-          saldo_actual:montoNeto,
+          saldo_actual:montoVal,
         }]);
         if(e2) throw e2;
       }
@@ -861,7 +865,7 @@ function Transacciones({db,sesion}){
       const entrada={id:Date.now(),tipo,icono:tipoActual.icon,label:tipoActual.label,nombre:socioSel.nombre,cedula:socioSel.cedula,monto:montoVal,voucher:form.voucher,color:tipoActual.color};
       setHistorial(p=>[entrada,...p]);
       setConfirmacion({socio:socioSel,socioUpd,monto:montoVal,tipo,label:tipoActual.label,color:tipoActual.color,reserva,cuota:cuotaCalc,msgWsp:msg,linkWsp:`https://wa.me/593${socioSel.telefono?.replace(/^0/,"")}?text=${encodeURIComponent(msg)}`});
-      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13"});
+      setForm({socioId:"",monto:"",fecha:new Date().toISOString().split("T")[0],cuentaId:"",nota:"",voucher:"",plazo:"12",tasa:"0.13",aplicaReserva:true});
       setVerTabla(false);
     }catch(e){setError("Error: "+e.message);}
     setProcesando(false);
@@ -979,12 +983,21 @@ function Transacciones({db,sesion}){
                       </div>
                     )}
                   </div>
+                  <div style={{marginTop:10}}>
+                    <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",background:C.card,border:`1px solid ${form.aplicaReserva?C.border:C.yellow}`,borderRadius:8,padding:"10px 12px"}}>
+                      <input type="checkbox" checked={form.aplicaReserva} onChange={e=>f("aplicaReserva",e.target.checked)} style={{width:16,height:16,cursor:"pointer"}}/>
+                      <div>
+                        <div style={{color:C.white,fontSize:12,fontWeight:700}}>Aplicar reserva legal 3%</div>
+                        <div style={{color:C.muted,fontSize:10}}>{form.aplicaReserva?"Se descuenta 3% del monto":"Sin reserva — para refinanciamientos"}</div>
+                      </div>
+                    </label>
+                  </div>
                   {montoVal>0&&(
                     <div style={{marginTop:10,background:"#1a0a2e",border:"1px solid #4c1d95",borderRadius:10,padding:12}}>
                       <div style={{color:"#c4b5fd",fontSize:10,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:8}}>⚙️ Tasa Flat {(tasaAnual*100).toFixed(1)}% anual</div>
                       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:8}}>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Bruto</div><div style={{color:C.white,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoVal)}</div></div>
-                        <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Reserva 3%</div><div style={{color:C.red,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>-{fmt(reserva)}</div></div>
+                        <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>{form.aplicaReserva?"Reserva 3%":"Sin reserva"}</div><div style={{color:C.red,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>-{fmt(reserva)}</div></div>
                         <div style={{textAlign:"center"}}><div style={{color:C.muted,fontSize:9,textTransform:"uppercase",marginBottom:2}}>Entregado</div><div style={{color:C.green,fontSize:13,fontWeight:800,fontFamily:"'DM Mono',monospace"}}>{fmt(montoNeto)}</div></div>
                       </div>
                       <div style={{background:"rgba(139,92,246,0.15)",borderRadius:8,padding:"8px 12px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
