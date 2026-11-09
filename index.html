@@ -2555,17 +2555,19 @@ function Contabilidad({db, sesion}){
               ESTADO DE RESULTADOS — ENE A MAY 2026
             </div>
             <div style={{color:C.green,fontWeight:700,fontSize:12,marginBottom:8}}>INGRESOS</div>
-            <ROW label="Intereses ganados — cartera" value={fmt(saldo("5101"))} indent/>
-            <ROW label="Mora cobrada" value={fmt(saldo("5190"))} indent/>
-            <ROW label="Intereses ganados — bancos" value={fmt(saldo("5201"))} indent/>
-            <ROW label="Reserva legal cobrada" value={fmt(saldo("5604"))} indent/>
-            <ROW label="Otros ingresos" value={fmt(saldo("5690"))} indent/>
+            <ROW label="Intereses de cartera" value={fmt(saldo("5104"))} indent/>
+            <ROW label="Intereses ganados — bancos" value={fmt(saldo("5101"))} indent/>
+            <ROW label="Servicios — cambio de cheques" value={fmt(saldo("5490"))} indent/>
+            <ROW label="Rendimiento inversiones" value={fmt(saldo("569005"))} indent/>
+            <ROW label="Cobranzas e intereses de mora" value={fmt(saldo("569010"))} indent/>
             <ROW label="TOTAL INGRESOS" value={fmt(ingresos)} bold color={C.green}/>
             <div style={{height:12}}/>
             <div style={{color:C.red,fontWeight:700,fontSize:12,marginBottom:8}}>GASTOS</div>
-            <ROW label="Suscripción sistema ($60/mes)" value={fmt(saldo("4505"))} indent/>
-            <ROW label="Configuración sistema (pago único)" value={fmt(saldo("4506"))} indent/>
-            <ROW label="Otros gastos" value={fmt(saldo("4590"))} indent/>
+            <ROW label="Intereses causados — depósitos" value={fmt(saldo("4101")+saldo("410105")+saldo("410110"))} indent/>
+            <ROW label="Servicios y comisiones bancarias" value={fmt(saldo("4290"))} indent/>
+            <ROW label="Provisión cartera de créditos" value={fmt(saldo("4402"))} indent/>
+            <ROW label="Servicios varios (notaría, eventos)" value={fmt(saldo("4503"))} indent/>
+            <ROW label="Amortizaciones — software" value={fmt(saldo("4506"))} indent/>
             <ROW label="TOTAL GASTOS" value={fmt(gastos)} bold color={C.red}/>
             <div style={{display:"flex",justifyContent:"space-between",padding:"12px 0",marginTop:8,borderTop:`2px solid ${C.border}`}}>
               <span style={{color:C.gold,fontWeight:800,fontSize:14}}>EXCEDENTE DEL PERÍODO</span>
