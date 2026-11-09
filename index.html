@@ -885,7 +885,6 @@ function Transacciones({db,sesion}){
       <p style={{color:C.muted,fontSize:13,marginBottom:20}}>{historial.length} transacciones en esta sesión</p>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20,alignItems:"start"}}>
         <div style={{height:"calc(100vh - 200px)",overflowY:"auto",paddingRight:8,scrollbarWidth:"thin"}}>
-          <Buscador valor={buscarSocio} onChange={v=>{setBuscarSocio(v);if(!v)f("socioId","");}} placeholder="🔍 Buscar socio por nombre o cédula..."/>
           <div style={{marginBottom:16}}>
             <div style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:10}}>Tipo de Transacción</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
@@ -908,8 +907,14 @@ function Transacciones({db,sesion}){
             </div>
             <div style={{display:"grid",gap:12}}>
               <div>
-                <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>👤 Socio *</label>
-                <Buscador valor={buscarSocio} onChange={v=>{setBuscarSocio(v);if(!v)f("socioId","");}} placeholder="🔍 Filtrar socio..."/>
+                <label style={{color:C.muted,fontSize:10,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",display:"block",marginBottom:5}}>👤 Socio * <span style={{color:C.muted,fontWeight:400,textTransform:"none"}}>— escribe nombre o cédula</span></label>
+                <Buscador valor={buscarSocio} onChange={v=>{
+                  setBuscarSocio(v);
+                  if(!v){f("socioId","");return;}
+                  const mm=socios.filter(s=>s.cedula===v||s.nombre.toLowerCase().includes(v.toLowerCase())||(s.cedula||"").includes(v)||(s.telefono||"").includes(v));
+                  if(mm.length===1) f("socioId",mm[0].id);
+                  else if(mm.length===0) f("socioId","");
+                }} placeholder="🔍 Nombre o cédula del socio..."/>
                 <select value={form.socioId} onChange={e=>f("socioId",e.target.value)} style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px",color:form.socioId?C.white:C.muted,fontSize:13,cursor:"pointer"}}>
                   <option value="">— Seleccionar socio —</option>
                   {socios.filter(s=>!buscarSocio||s.nombre.toLowerCase().includes(buscarSocio.toLowerCase())||s.cedula.includes(buscarSocio)||(s.telefono||"").includes(buscarSocio)).map(s=><option key={s.id} value={s.id}>{s.nombre} · {s.cedula}</option>)}
